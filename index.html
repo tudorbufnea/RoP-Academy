@@ -1582,6 +1582,17 @@ function StudentView({
     const roster = sGet("roster") || [];
     if (!roster.includes(user.name)) sSet("roster", [...roster, user.name]);
   }, []);
+
+  // Deduplicare: un trade e identic daca symbol+side+entryPrice+exitPrice+qty coincid
+  const isDuplicate = (existing, t) => existing.some(e => e.symbol === t.symbol && e.side === t.side && Math.abs(e.entryPrice - t.entryPrice) < 0.01 && Math.abs(e.exitPrice - t.exitPrice) < 0.01 && Math.abs(e.qty - t.qty) < 0.001);
+  const mergeUnique = (existing, incoming) => {
+    const dupes = incoming.filter(t => isDuplicate(existing, t));
+    const unique = incoming.filter(t => !isDuplicate(existing, t));
+    return {
+      merged: [...existing, ...unique],
+      dupeCount: dupes.length
+    };
+  };
   const processFile = useCallback(async file => {
     setErr("");
     setCsvName(prev => prev ? prev + " + " + file.name : file.name);
@@ -1597,8 +1608,12 @@ function StudentView({
       return;
     }
     setTrades(prev => {
-      const merged = [...prev, ...paired];
+      const {
+        merged,
+        dupeCount
+      } = mergeUnique(prev, paired);
       setStats(calcStats(merged, acc));
+      if (dupeCount > 0) setErr(`⚠ ${dupeCount} tradeuri duplicate ignorate (existau deja în sesiune).`);else setErr("");
       return merged;
     });
     setStep("preview");
@@ -1644,8 +1659,12 @@ function StudentView({
     }
     const acc = parseFloat(accountSize) || savedAccount || 0;
     setTrades(prev => {
-      const merged = [...prev, ...manualTrades];
+      const {
+        merged,
+        dupeCount
+      } = mergeUnique(prev, manualTrades);
       setStats(calcStats(merged, acc));
+      if (dupeCount > 0) setErr(`⚠ ${dupeCount} tradeuri duplicate ignorate (existau deja în sesiune).`);else setErr("");
       return merged;
     });
     setCsvName(prev => prev ? prev + " + manual" : "Introducere manuală");
