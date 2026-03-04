@@ -256,7 +256,7 @@ async function fetchAIAnalysis(trades, stats, history, notes, objectives, accoun
   if (!apiKey) throw new Error("API key lipsă. Mentorul trebuie să configureze cheia în Setări → Mentor.");
   const histCtx = history.length > 0 ? history.slice(-5).map((s, i) => `Ses.${i + 1}(${s.date}): WR ${s.stats.winRate.toFixed(1)}%, P&L ${s.stats.totalPnl.toFixed(2)}, Pct ${(s.stats.totalPoints || 0) >= 0 ? "+" : ""}${(s.stats.totalPoints || 0).toFixed(1)}, RR ${s.stats.rr.toFixed(2)}`).join("\n") : "Prima sesiune.";
   const prompt = `Ești un trading coach profesionist pentru indici (US30, NAS100). Analizează strict datele.
-TRADURI:\n${trades.map((t, i) => `${i + 1}. ${t.symbol}|${t.side}|${t.entryPrice}→${t.exitPrice}|Pct:${t.points >= 0 ? "+" : ""}${t.points.toFixed(1)}|P&L:${t.pnl.toFixed(2)}|${t.win ? "WIN" : "LOSS"}${tradeNotes && tradeNotes[i] ? "|NOTA: " + tradeNotes[i] : ""}`).join("\n")}
+TRADEURI:\n${trades.map((t, i) => `${i + 1}. ${t.symbol}|${t.side}|${t.entryPrice}→${t.exitPrice}|Pct:${t.points >= 0 ? "+" : ""}${t.points.toFixed(1)}|P&L:${t.pnl.toFixed(2)}|${t.win ? "WIN" : "LOSS"}${tradeNotes && tradeNotes[i] ? "|NOTA: " + tradeNotes[i] : ""}`).join("\n")}
 STATISTICI: WR ${stats.winRate.toFixed(1)}%, Puncte ${stats.totalPoints >= 0 ? "+" : ""}${stats.totalPoints.toFixed(1)}, P&L ${stats.totalPnl.toFixed(2)}, RR ${stats.rr.toFixed(2)}, ${stats.wins}W/${stats.losses}L
 ${accountSize > 0 ? `Cont: ${accountSize}→${(_stats$accountAfter = stats.accountAfter) === null || _stats$accountAfter === void 0 ? void 0 : _stats$accountAfter.toFixed(2)} (${stats.accountPct >= 0 ? "+" : ""}${(_stats$accountPct = stats.accountPct) === null || _stats$accountPct === void 0 ? void 0 : _stats$accountPct.toFixed(2)}%)` : ""}
 ISTORIC:\n${histCtx}
@@ -1584,7 +1584,7 @@ function StudentView({
   }, []);
   const processFile = useCallback(async file => {
     setErr("");
-    setCsvName(file.name);
+    setCsvName(prev => prev ? prev + " + " + file.name : file.name);
     const rows = parseCSV(await file.text());
     if (!rows.length) {
       setErr("CSV invalid. TradingView → broker → Export Data → History.");
@@ -1593,11 +1593,14 @@ function StudentView({
     const acc = parseFloat(accountSize) || savedAccount || 0;
     const paired = pairTrades(rows);
     if (!paired.length) {
-      setErr("Nu s-au detectat traduri pereche.");
+      setErr("Nu s-au detectat tradeuri pereche.");
       return;
     }
-    setTrades(paired);
-    setStats(calcStats(paired, acc));
+    setTrades(prev => {
+      const merged = [...prev, ...paired];
+      setStats(calcStats(merged, acc));
+      return merged;
+    });
     setStep("preview");
   }, [accountSize, savedAccount]);
   useEffect(() => {
@@ -1640,9 +1643,13 @@ function StudentView({
       return;
     }
     const acc = parseFloat(accountSize) || savedAccount || 0;
-    setTrades(manualTrades);
-    setStats(calcStats(manualTrades, acc));
-    setCsvName("Introducere manuală");
+    setTrades(prev => {
+      const merged = [...prev, ...manualTrades];
+      setStats(calcStats(merged, acc));
+      return merged;
+    });
+    setCsvName(prev => prev ? prev + " + manual" : "Introducere manuală");
+    setManualTrades([]);
     setShowManual(false);
     setStep("preview");
   };
@@ -1872,13 +1879,13 @@ function StudentView({
       color: C.dim,
       paddingBottom: 12
     }
-  }, savedAccount > 0 ? `Salvat: ${savedAccount.toLocaleString()}` : "Introdu pentru a urmări contul")), trades.length > 0 ? /*#__PURE__*/React.createElement("div", {
+  }, savedAccount > 0 ? `Salvat: ${savedAccount.toLocaleString()}` : "Introdu pentru a urmări contul")), trades.length > 0 && /*#__PURE__*/React.createElement("div", {
     style: {
       background: C.gold + "08",
       border: `1px solid ${C.gold}30`,
       borderLeft: `4px solid ${C.gold}`,
-      padding: "14px 20px",
-      marginBottom: 20,
+      padding: "12px 20px",
+      marginBottom: 16,
       display: "flex",
       justifyContent: "space-between",
       alignItems: "center"
@@ -1888,14 +1895,14 @@ function StudentView({
       fontSize: 12,
       color: C.gold,
       fontWeight: 700,
-      marginBottom: 4
+      marginBottom: 2
     }
-  }, "\uD83D\uDCCA ", trades.length, " traduri \xEEnc\u0103rcate \u2014 ", csvName), /*#__PURE__*/React.createElement("div", {
+  }, "\uD83D\uDCCA ", trades.length, " tradeuri \xEEn sesiune"), /*#__PURE__*/React.createElement("div", {
     style: {
-      fontSize: 11,
+      fontSize: 10,
       color: C.dim
     }
-  }, "Sesiunea nu a fost salvat\u0103 \xEEnc\u0103.")), /*#__PURE__*/React.createElement("div", {
+  }, "Po\u021Bi ad\u0103uga mai multe mai jos sau continui cu ce ai.")), /*#__PURE__*/React.createElement("div", {
     style: {
       display: "flex",
       gap: 10
@@ -1904,7 +1911,7 @@ function StudentView({
     variant: "primary",
     small: true,
     onClick: () => setStep("preview")
-  }, "CONTINU\u0102 \u2192"), /*#__PURE__*/React.createElement(Btn, {
+  }, "PREVIEW \u2192"), /*#__PURE__*/React.createElement(Btn, {
     variant: "ghost",
     small: true,
     onClick: () => {
@@ -1913,7 +1920,7 @@ function StudentView({
       setCsvName("");
       setTradeNotes({});
     }
-  }, "\u0218TERGE"))) : /*#__PURE__*/React.createElement("div", {
+  }, "RESETEAZ\u0102"))), /*#__PURE__*/React.createElement("div", {
     onDrop: e => {
       e.preventDefault();
       setDrag(false);
@@ -1928,25 +1935,25 @@ function StudentView({
     style: {
       border: `2px dashed ${drag ? C.gold : C.border}`,
       borderRadius: 4,
-      padding: "60px 40px",
+      padding: trades.length > 0 ? "30px 40px" : "60px 40px",
       textAlign: "center",
       cursor: "pointer",
       background: drag ? C.gold + "05" : C.surface,
       transition: "all .2s",
-      marginBottom: 28
+      marginBottom: 16
     }
   }, /*#__PURE__*/React.createElement("div", {
     style: {
-      fontSize: 36,
-      marginBottom: 12
+      fontSize: trades.length > 0 ? 24 : 36,
+      marginBottom: 8
     }
   }, "\uD83D\uDCCA"), /*#__PURE__*/React.createElement("div", {
     style: {
-      fontSize: 13,
+      fontSize: 12,
       color: C.dim,
-      marginBottom: 6
+      marginBottom: 4
     }
-  }, "Trage CSV-ul sau click"), /*#__PURE__*/React.createElement("div", {
+  }, trades.length > 0 ? "+ Adaugă CSV suplimentar" : "Trage CSV-ul sau click"), /*#__PURE__*/React.createElement("div", {
     style: {
       fontSize: 10,
       color: C.dim + "80"
@@ -1989,7 +1996,7 @@ function StudentView({
       borderRadius: 2,
       cursor: "pointer"
     }
-  }, showManual ? "✕ ÎNCHIDE INTRODUCERE MANUALĂ" : "✎ INTRODU TRADURILE MANUAL")), showManual && /*#__PURE__*/React.createElement("div", {
+  }, showManual ? "✕ ÎNCHIDE INTRODUCERE MANUALĂ" : "✎ INTRODU TRADEURILE MANUAL")), showManual && /*#__PURE__*/React.createElement("div", {
     style: {
       background: C.surface,
       border: `1px solid ${C.gold}30`,
@@ -2004,14 +2011,14 @@ function StudentView({
       color: C.gold,
       marginBottom: 4
     }
-  }, "Introducere manual\u0103 traduri"), /*#__PURE__*/React.createElement("div", {
+  }, "Introducere manual\u0103 tradeuri"), /*#__PURE__*/React.createElement("div", {
     style: {
       fontSize: 11,
       color: C.dim,
       marginBottom: 20,
       lineHeight: 1.7
     }
-  }, "Introdu fiecare trade individual. Adaug\u0103 toate tradurile sesiunii, apoi apas\u0103 \"Continu\u0103\"."), /*#__PURE__*/React.createElement("div", {
+  }, "Introdu fiecare trade individual. Adaug\u0103 toate tradeurile sesiunii, apoi apas\u0103 \"Continu\u0103\"."), /*#__PURE__*/React.createElement("div", {
     style: {
       display: "grid",
       gridTemplateColumns: "1fr 1fr 1fr 1fr 1fr auto",
@@ -2136,7 +2143,7 @@ function StudentView({
       letterSpacing: 2,
       marginBottom: 10
     }
-  }, "TRADURI AD\u0102UGATE (", manualTrades.length, ")"), manualTrades.map((t, i) => /*#__PURE__*/React.createElement("div", {
+  }, "TRADEURI AD\u0102UGATE (", manualTrades.length, ")"), manualTrades.map((t, i) => /*#__PURE__*/React.createElement("div", {
     key: i,
     style: {
       display: "flex",
@@ -2208,7 +2215,7 @@ function StudentView({
     style: {
       color: C.dim
     }
-  }, "Total: ", manualTrades.length, " traduri"), /*#__PURE__*/React.createElement("span", {
+  }, "Total: ", manualTrades.length, " tradeuri"), /*#__PURE__*/React.createElement("span", {
     style: {
       color: manualTrades.filter(t => t.win).length / manualTrades.length >= 0.5 ? C.green : C.red
     }
@@ -2228,7 +2235,7 @@ function StudentView({
   }, err), /*#__PURE__*/React.createElement(Btn, {
     onClick: submitManualTrades,
     disabled: !manualTrades.length
-  }, "CONTINU\u0102 CU ", manualTrades.length, " TRADURI \u2192")), history.length > 0 && /*#__PURE__*/React.createElement("div", null, /*#__PURE__*/React.createElement(SectionTitle, null, "Sesiuni recente"), /*#__PURE__*/React.createElement("div", {
+  }, "CONTINU\u0102 CU ", manualTrades.length, " TRADEURI \u2192")), history.length > 0 && /*#__PURE__*/React.createElement("div", null, /*#__PURE__*/React.createElement(SectionTitle, null, "Sesiuni recente"), /*#__PURE__*/React.createElement("div", {
     style: {
       display: "grid",
       gridTemplateColumns: "repeat(auto-fill, minmax(165px,1fr))",
@@ -2316,7 +2323,7 @@ function StudentView({
       textAlign: "left",
       padding: 0
     }
-  }, "\u2190 \xCENAPOI (tradurile r\u0103m\xE2n)"), /*#__PURE__*/React.createElement("div", {
+  }, "\u2190 \xCENAPOI (tradeurile r\u0103m\xE2n)"), /*#__PURE__*/React.createElement("div", {
     style: {
       fontSize: 18,
       fontWeight: 700,
@@ -2328,7 +2335,7 @@ function StudentView({
       color: C.dim
     }
   }, csvName)), /*#__PURE__*/React.createElement(Badge, {
-    label: `${trades.length} TRADURI`
+    label: `${trades.length} TRADEURI`
   })), /*#__PURE__*/React.createElement("div", {
     style: {
       marginBottom: 20,
@@ -2413,7 +2420,7 @@ function StudentView({
     style: {
       marginBottom: 20
     }
-  }, /*#__PURE__*/React.createElement(SectionTitle, null, "Traduri detectate"), trades.map((t, i) => /*#__PURE__*/React.createElement("div", {
+  }, /*#__PURE__*/React.createElement(SectionTitle, null, "Tradeuri detectate"), trades.map((t, i) => /*#__PURE__*/React.createElement("div", {
     key: i,
     style: {
       marginBottom: 4
@@ -2473,10 +2480,16 @@ function StudentView({
     }
   }, t.pnl >= 0 ? "+" : "", t.pnl.toFixed(2)), /*#__PURE__*/React.createElement("span", {
     style: {
-      color: C.dim + "50",
-      fontSize: 10
+      fontSize: 11,
+      fontWeight: 700,
+      letterSpacing: 1,
+      padding: "3px 10px",
+      borderRadius: 2,
+      background: expandedTrade === i ? C.gold + "25" : C.gold + "12",
+      color: expandedTrade === i ? C.gold : C.gold + "90",
+      border: `1px solid ${expandedTrade === i ? C.gold + "80" : C.gold + "30"}`
     }
-  }, expandedTrade === i ? "▲" : "▼"))), expandedTrade === i && /*#__PURE__*/React.createElement("div", {
+  }, expandedTrade === i ? "✕ NOTĂ" : "+ NOTĂ"))), expandedTrade === i && /*#__PURE__*/React.createElement("div", {
     style: {
       padding: "10px 14px",
       background: C.surface2,
@@ -3835,7 +3848,7 @@ function MentorView({
   }, /*#__PURE__*/React.createElement(SectionTitle, null, "Obiective pentru ", selected), /*#__PURE__*/React.createElement(Textarea, {
     value: objDraft,
     onChange: setObjDraft,
-    placeholder: "Ex: RR minim 1.5, max 3 traduri/zi, minim +50 pct/sesiune",
+    placeholder: "Ex: RR minim 1.5, max 3 tradeuri/zi, minim +50 pct/sesiune",
     rows: 3
   }), /*#__PURE__*/React.createElement("div", {
     style: {
