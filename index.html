@@ -1,0 +1,4616 @@
+<!DOCTYPE html>
+<html lang="ro">
+<head>
+<meta charset="UTF-8"/>
+<meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+<title>ROP Trading Academy</title>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/react/18.2.0/umd/react.production.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/react-dom/18.2.0/umd/react-dom.production.min.js"></script>
+<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;700&display=swap" rel="stylesheet"/>
+<style>
+  *{box-sizing:border-box;margin:0;padding:0}
+  body{background:#070709;font-family:'IBM Plex Mono',monospace;color:#d4d4d8}
+  input[type=number]::-webkit-inner-spin-button{-webkit-appearance:none}
+  ::-webkit-scrollbar{width:6px;background:#0e0e12}
+  ::-webkit-scrollbar-thumb{background:#1c1c24;border-radius:3px}
+  input::placeholder,textarea::placeholder{color:#52525b}
+  @keyframes blink{0%,100%{opacity:.15}50%{opacity:1}}
+</style>
+  <link rel="manifest" href="manifest.json"/>
+  <meta name="theme-color" content="#070709"/>
+  <meta name="mobile-web-app-capable" content="yes"/>
+  <meta name="apple-mobile-web-app-capable" content="yes"/>
+  <meta name="apple-mobile-web-app-title" content="ROP Academy"/>
+</head>
+<body>
+<div id="root"></div>
+<script type="text/javascript">
+const {
+  useState,
+  useEffect,
+  useRef,
+  useCallback
+} = React;
+
+// ─── Config ───────────────────────────────────────────────────────────────────
+const DEFAULT_PASS = "mentor2025";
+function getMentorPass() {
+  return sGet("mentor_pass") || DEFAULT_PASS;
+}
+const STORAGE_PREFIX = "rop_academy_";
+
+// ─── Storage helpers (localStorage cu fallback în memorie) ────────────────────
+// Edge blochează localStorage pe file:// — folosim memorie ca fallback
+const _memStore = {};
+let _useMemory = false;
+function _testStorage() {
+  try {
+    localStorage.setItem("__test__", "1");
+    localStorage.removeItem("__test__");
+    return true;
+  } catch {
+    return false;
+  }
+}
+_useMemory = !_testStorage();
+if (_useMemory) {
+  // Pre-load orice date existente din sessionStorage dacă există
+  try {
+    Object.keys(sessionStorage).filter(k => k.startsWith(STORAGE_PREFIX)).forEach(k => {
+      _memStore[k.slice(STORAGE_PREFIX.length)] = sessionStorage.getItem(k);
+    });
+  } catch {}
+}
+function sGet(key) {
+  try {
+    const raw = _useMemory ? _memStore[key] : localStorage.getItem(STORAGE_PREFIX + key);
+    return raw ? JSON.parse(raw) : null;
+  } catch {
+    return null;
+  }
+}
+function sSet(key, val) {
+  try {
+    const str = JSON.stringify(val);
+    if (_useMemory) {
+      _memStore[key] = str;
+      try {
+        sessionStorage.setItem(STORAGE_PREFIX + key, str);
+      } catch {}
+    } else {
+      localStorage.setItem(STORAGE_PREFIX + key, str);
+    }
+    return true;
+  } catch {
+    return false;
+  }
+}
+function sDel(key) {
+  try {
+    if (_useMemory) {
+      delete _memStore[key];
+      try {
+        sessionStorage.removeItem(STORAGE_PREFIX + key);
+      } catch {}
+    } else {
+      localStorage.removeItem(STORAGE_PREFIX + key);
+    }
+    return true;
+  } catch {
+    return false;
+  }
+}
+function isStoragePersistent() {
+  return !_useMemory;
+}
+
+// ─── CSV / Trade logic ────────────────────────────────────────────────────────
+function parseCSV(text) {
+  const lines = text.trim().split("\n").filter(Boolean);
+  if (lines.length < 2) return [];
+  const header = lines[0].split(",").map(h => h.trim().replace(/^"|"$/g, "").toLowerCase());
+  return lines.slice(1).map(line => {
+    const vals = line.split(",");
+    const obj = {};
+    header.forEach((h, i) => {
+      obj[h] = (vals[i] || "").trim().replace(/^"|"$/g, "");
+    });
+    return obj;
+  });
+}
+
+// ─── Parser Universal Broker ─────────────────────────────────────────────────
+// Detecteaza automat coloanele indiferent de broker
+const BROKER_COLS = {
+  // Simbol instrument
+  symbol: ["symbol", "instrument", "market", "ticker", "asset", "product", "contract", "pair", "currency pair", "name"],
+  // Directia tranzactiei
+  side: ["side", "type", "direction", "action", "operation", "order type", "trade type", "bs", "buysell", "buy/sell", "position", "trade direction"],
+  // Pret de executie
+  price: ["fill price", "filled price", "execution price", "deal price", "rate", "price", "stop price", "open price", "close price", "entry price", "exit price", "avg price", "average price", "traded price", "t. price", "transaction price", "order price"],
+  // Cantitate / lot
+  qty: ["qty", "quantity", "size", "volume", "lots", "lot size", "units", "amount", "shares", "contracts", "filled qty", "filled quantity", "deal size"],
+  // Timp
+  time: ["closing time", "close time", "time", "date", "datetime", "timestamp", "trade time", "execution time", "filled time", "date/time", "open time", "transaction time", "trade date", "date time", "entry time", "exit time", "closed", "opened"]
+};
+function detectColumns(headers) {
+  const map = {};
+  const hdrs = headers.map(h => h.toLowerCase().trim());
+  Object.entries(BROKER_COLS).forEach(([field, variants]) => {
+    for (const v of variants) {
+      const idx = hdrs.indexOf(v);
+      if (idx !== -1) {
+        map[field] = headers[idx];
+        break;
+      }
+    }
+  });
+  return map;
+}
+function getField(row, field, colMap) {
+  if (colMap[field]) return row[colMap[field]] || "";
+  // Fallback: cauta partial in cheile randului
+  const variants = BROKER_COLS[field] || [];
+  for (const key of Object.keys(row)) {
+    const kl = key.toLowerCase().trim();
+    if (variants.some(v => kl.includes(v) || v.includes(kl))) return row[key] || "";
+  }
+  return "";
+}
+
+// Detecteaza daca un string e BUY sau SELL
+function parseSide(val) {
+  const v = (val || "").toLowerCase();
+  if (v.includes("buy") || v === "b" || v === "long" || v === "bl") return "BUY";
+  if (v.includes("sell") || v === "s" || v === "short" || v === "sl") return "SELL";
+  return null;
+}
+function pairTrades(rows, detectedBroker) {
+  if (!rows.length) return [];
+  const headers = Object.keys(rows[0]);
+  const colMap = detectColumns(headers);
+  const bySymbol = {};
+  rows.forEach(r => {
+    const sym = (getField(r, "symbol", colMap) || "UNKNOWN").trim().toUpperCase();
+    if (!bySymbol[sym]) bySymbol[sym] = [];
+    bySymbol[sym].push(r);
+  });
+  const trades = [];
+  Object.entries(bySymbol).forEach(([sym, rs]) => {
+    // Sortare cronologica daca exista coloana de timp
+    const hasTime = rs.some(r => getField(r, "time", colMap));
+    const sorted = hasTime ? [...rs].sort((a, b) => {
+      const ta = new Date(getField(a, "time", colMap) || 0).getTime();
+      const tb = new Date(getField(b, "time", colMap) || 0).getTime();
+      return ta - tb;
+    }) : [...rs]; // pastreaza ordinea CSV daca nu e timp
+
+    const buys = sorted.filter(r => parseSide(getField(r, "side", colMap)) === "BUY");
+    const sells = sorted.filter(r => parseSide(getField(r, "side", colMap)) === "SELL");
+    if (!buys.length || !sells.length) return;
+    const entries = buys.length >= sells.length ? buys : sells;
+    const exits = buys.length >= sells.length ? sells : buys;
+    const side = entries === buys ? "BUY" : "SELL";
+    for (let i = 0; i < Math.min(entries.length, exits.length); i++) {
+      const epRaw = getField(entries[i], "price", colMap);
+      const xpRaw = getField(exits[i], "price", colMap);
+      const ep = parseFloat(epRaw.replace(/[^0-9.-]/g, "")) || 0;
+      const xp = parseFloat(xpRaw.replace(/[^0-9.-]/g, "")) || 0;
+      const qRaw = getField(entries[i], "qty", colMap);
+      const qty = parseFloat(qRaw.replace(/[^0-9.-]/g, "")) || 1;
+      if (!ep || !xp) return; // skip daca pretul lipseste
+      const pnl = side === "BUY" ? (xp - ep) * qty : (ep - xp) * qty;
+      const points = side === "BUY" ? xp - ep : ep - xp;
+      trades.push({
+        symbol: sym,
+        side,
+        entryPrice: ep,
+        exitPrice: xp,
+        qty,
+        pnl,
+        points,
+        win: pnl > 0,
+        entryTime: getField(entries[i], "time", colMap),
+        exitTime: getField(exits[i], "time", colMap)
+      });
+    }
+  });
+  return trades;
+}
+function calcStats(trades, accountSize = 0) {
+  const closed = trades.filter(t => t.pnl !== null);
+  const wins = closed.filter(t => t.win);
+  const losses = closed.filter(t => !t.win);
+  const totalPnl = closed.reduce((s, t) => s + t.pnl, 0);
+  const totalPoints = closed.reduce((s, t) => s + t.points, 0);
+  const avgWin = wins.length ? wins.reduce((s, t) => s + t.pnl, 0) / wins.length : 0;
+  const avgLoss = losses.length ? Math.abs(losses.reduce((s, t) => s + t.pnl, 0)) / losses.length : 1;
+  const avgWinPts = wins.length ? wins.reduce((s, t) => s + t.points, 0) / wins.length : 0;
+  const avgLossPts = losses.length ? Math.abs(losses.reduce((s, t) => s + t.points, 0)) / losses.length : 0;
+  const accountAfter = accountSize > 0 ? accountSize + totalPnl : null;
+  const accountPct = accountSize > 0 ? totalPnl / accountSize * 100 : null;
+  return {
+    total: closed.length,
+    wins: wins.length,
+    losses: losses.length,
+    winRate: closed.length ? wins.length / closed.length * 100 : 0,
+    totalPnl,
+    totalPoints,
+    avgWin,
+    avgLoss,
+    avgWinPts,
+    avgLossPts,
+    rr: avgLoss > 0 ? avgWin / avgLoss : 0,
+    rrPts: avgLossPts > 0 ? avgWinPts / avgLossPts : 0,
+    maxWin: wins.length ? Math.max(...wins.map(t => t.pnl)) : 0,
+    maxLoss: losses.length ? Math.min(...losses.map(t => t.pnl)) : 0,
+    maxWinPts: wins.length ? Math.max(...wins.map(t => t.points)) : 0,
+    maxLossPts: losses.length ? Math.min(...losses.map(t => t.points)) : 0,
+    accountAfter,
+    accountPct
+  };
+}
+async function fetchAIAnalysis(trades, stats, history, notes, objectives, accountSize) {
+  var _stats$accountAfter, _stats$accountPct, _data$content;
+  const apiKey = loadApiKey();
+  if (!apiKey) throw new Error("API key lipsă. Mentorul trebuie să configureze cheia în Setări → Mentor.");
+  const histCtx = history.length > 0 ? history.slice(-5).map((s, i) => `Ses.${i + 1}(${s.date}): WR ${s.stats.winRate.toFixed(1)}%, P&L ${s.stats.totalPnl.toFixed(2)}, Pct ${(s.stats.totalPoints || 0) >= 0 ? "+" : ""}${(s.stats.totalPoints || 0).toFixed(1)}, RR ${s.stats.rr.toFixed(2)}`).join("\n") : "Prima sesiune.";
+  const prompt = `Ești un trading coach profesionist pentru indici (US30, NAS100). Analizează strict datele.
+TRADURI:\n${trades.map((t, i) => `${i + 1}. ${t.symbol}|${t.side}|${t.entryPrice}→${t.exitPrice}|Pct:${t.points >= 0 ? "+" : ""}${t.points.toFixed(1)}|P&L:${t.pnl.toFixed(2)}|${t.win ? "WIN" : "LOSS"}`).join("\n")}
+STATISTICI: WR ${stats.winRate.toFixed(1)}%, Puncte ${stats.totalPoints >= 0 ? "+" : ""}${stats.totalPoints.toFixed(1)}, P&L ${stats.totalPnl.toFixed(2)}, RR ${stats.rr.toFixed(2)}, ${stats.wins}W/${stats.losses}L
+${accountSize > 0 ? `Cont: ${accountSize}→${(_stats$accountAfter = stats.accountAfter) === null || _stats$accountAfter === void 0 ? void 0 : _stats$accountAfter.toFixed(2)} (${stats.accountPct >= 0 ? "+" : ""}${(_stats$accountPct = stats.accountPct) === null || _stats$accountPct === void 0 ? void 0 : _stats$accountPct.toFixed(2)}%)` : ""}
+ISTORIC:\n${histCtx}
+${objectives ? `OBIECTIVE MENTOR: ${objectives}` : ""}
+${notes ? `NOTE ELEV: ${notes}` : ""}
+Răspunde EXCLUSIV JSON valid, fără text în plus:
+{"verdict":"BUNĂ|NEUTRĂ|SLABĂ","scor":0-100,"rezumat":"2-3 propoziții","puncte_forte":["max 3"],"erori_identificate":["max 3"],"pattern_periculos":"string sau null","comparatie_cu_istoric":"string","sugestii_maine":["3 sugestii"],"focus_principal":"un lucru","respectat_obiectivele":"DA|PARȚIAL|NU|N/A","obs_obiective":"obs scurtă"}`;
+  const res = await fetch("https://api.anthropic.com/v1/messages", {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      "x-api-key": apiKey,
+      "anthropic-version": "2023-06-01",
+      "anthropic-dangerous-direct-browser-access": "true"
+    },
+    body: JSON.stringify({
+      model: "claude-sonnet-4-5-20251001",
+      max_tokens: 1000,
+      messages: [{
+        role: "user",
+        content: prompt
+      }]
+    })
+  });
+  if (!res.ok) {
+    var _err$error;
+    const err = await res.json();
+    throw new Error(((_err$error = err.error) === null || _err$error === void 0 ? void 0 : _err$error.message) || `API error ${res.status}`);
+  }
+  const data = await res.json();
+  const text = ((_data$content = data.content) === null || _data$content === void 0 ? void 0 : _data$content.map(c => c.text || "").join("")) || "{}";
+  const clean = text.replace(/```json|```/g, "").trim();
+  return JSON.parse(clean);
+}
+
+// ─── Design ───────────────────────────────────────────────────────────────────
+const C = {
+  bg: "#070709",
+  surface: "#0e0e12",
+  surface2: "#12121a",
+  border: "#1c1c24",
+  text: "#d4d4d8",
+  dim: "#52525b",
+  gold: "#d4a843",
+  green: "#4ade80",
+  red: "#f87171",
+  orange: "#fb923c",
+  blue: "#60a5fa",
+  mentorAccent: "#818cf8"
+};
+const font = "'IBM Plex Mono', monospace";
+
+// ─── Primitives ───────────────────────────────────────────────────────────────
+const Badge = ({
+  label,
+  color = C.gold
+}) => /*#__PURE__*/React.createElement("span", {
+  style: {
+    fontFamily: font,
+    fontSize: 10,
+    padding: "2px 8px",
+    border: `1px solid ${color}50`,
+    color,
+    background: color + "12",
+    borderRadius: 2,
+    letterSpacing: 1
+  }
+}, label);
+const StatTile = ({
+  label,
+  value,
+  color = C.gold,
+  sub,
+  sub2,
+  small
+}) => /*#__PURE__*/React.createElement("div", {
+  style: {
+    background: C.surface,
+    border: `1px solid ${C.border}`,
+    borderTop: `2px solid ${color}`,
+    padding: small ? "10px 12px" : "14px 16px"
+  }
+}, /*#__PURE__*/React.createElement("div", {
+  style: {
+    fontFamily: font,
+    fontSize: 9,
+    color: C.dim,
+    letterSpacing: 2,
+    textTransform: "uppercase",
+    marginBottom: 5
+  }
+}, label), /*#__PURE__*/React.createElement("div", {
+  style: {
+    fontFamily: font,
+    fontSize: small ? 16 : 20,
+    fontWeight: 700,
+    color
+  }
+}, value), sub && /*#__PURE__*/React.createElement("div", {
+  style: {
+    fontFamily: font,
+    fontSize: 10,
+    color: C.dim,
+    marginTop: 3
+  }
+}, sub), sub2 && /*#__PURE__*/React.createElement("div", {
+  style: {
+    fontFamily: font,
+    fontSize: 10,
+    color: C.dim + "80",
+    marginTop: 2
+  }
+}, sub2));
+const Btn = ({
+  children,
+  onClick,
+  variant = "primary",
+  disabled,
+  small
+}) => /*#__PURE__*/React.createElement("button", {
+  onClick: onClick,
+  disabled: disabled,
+  style: {
+    fontFamily: font,
+    fontSize: small ? 10 : 11,
+    letterSpacing: 2,
+    fontWeight: 700,
+    cursor: disabled ? "not-allowed" : "pointer",
+    padding: small ? "7px 14px" : "11px 24px",
+    borderRadius: 2,
+    transition: "opacity .15s",
+    background: variant === "primary" ? C.gold : variant === "mentor" ? C.mentorAccent : variant === "danger" ? C.red : "transparent",
+    color: ["primary", "mentor", "danger"].includes(variant) ? "#07070a" : C.dim,
+    border: variant === "ghost" ? `1px solid ${C.border}` : "none",
+    opacity: disabled ? 0.4 : 1
+  }
+}, children);
+const Input = ({
+  value,
+  onChange,
+  placeholder,
+  type = "text",
+  style = {}
+}) => /*#__PURE__*/React.createElement("input", {
+  type: type,
+  value: value,
+  onChange: e => onChange(e.target.value),
+  placeholder: placeholder,
+  style: {
+    fontFamily: font,
+    fontSize: 12,
+    background: C.surface,
+    border: `1px solid ${C.border}`,
+    color: C.text,
+    padding: "10px 14px",
+    borderRadius: 2,
+    outline: "none",
+    width: "100%",
+    ...style
+  }
+});
+const Textarea = ({
+  value,
+  onChange,
+  placeholder,
+  rows = 4
+}) => /*#__PURE__*/React.createElement("textarea", {
+  value: value,
+  onChange: e => onChange(e.target.value),
+  placeholder: placeholder,
+  rows: rows,
+  style: {
+    fontFamily: font,
+    fontSize: 12,
+    background: C.surface,
+    border: `1px solid ${C.border}`,
+    color: C.text,
+    padding: "10px 14px",
+    borderRadius: 2,
+    outline: "none",
+    width: "100%",
+    resize: "vertical"
+  }
+});
+const SectionTitle = ({
+  children,
+  action
+}) => /*#__PURE__*/React.createElement("div", {
+  style: {
+    display: "flex",
+    justifyContent: "space-between",
+    alignItems: "center",
+    marginBottom: 14,
+    borderBottom: `1px solid ${C.border}`,
+    paddingBottom: 8
+  }
+}, /*#__PURE__*/React.createElement("div", {
+  style: {
+    fontFamily: font,
+    fontSize: 9,
+    letterSpacing: 3,
+    color: C.dim,
+    textTransform: "uppercase"
+  }
+}, children), action);
+const Spinner = ({
+  label
+}) => /*#__PURE__*/React.createElement("div", {
+  style: {
+    display: "flex",
+    flexDirection: "column",
+    alignItems: "center",
+    gap: 20,
+    padding: "60px 0"
+  }
+}, /*#__PURE__*/React.createElement("div", {
+  style: {
+    display: "flex",
+    gap: 8
+  }
+}, [0, 1, 2].map(i => /*#__PURE__*/React.createElement("div", {
+  key: i,
+  style: {
+    width: 8,
+    height: 8,
+    background: C.gold,
+    borderRadius: "50%",
+    animation: `blink 1.2s ease-in-out ${i * 0.4}s infinite`
+  }
+}))), /*#__PURE__*/React.createElement("div", {
+  style: {
+    fontFamily: font,
+    fontSize: 10,
+    color: C.dim,
+    letterSpacing: 2
+  }
+}, label));
+function Sparkline({
+  data,
+  width = 80,
+  height = 28
+}) {
+  if (!data || data.length < 2) return /*#__PURE__*/React.createElement("span", {
+    style: {
+      fontSize: 10,
+      color: C.dim
+    }
+  }, "\u2014");
+  const min = Math.min(...data),
+    max = Math.max(...data),
+    range = max - min || 1;
+  const pts = data.map((v, i) => `${i / (data.length - 1) * width},${height - (v - min) / range * height}`).join(" ");
+  const color = data[data.length - 1] >= data[0] ? C.green : C.red;
+  return /*#__PURE__*/React.createElement("svg", {
+    width: width,
+    height: height,
+    style: {
+      overflow: "visible"
+    }
+  }, /*#__PURE__*/React.createElement("polyline", {
+    points: pts,
+    fill: "none",
+    stroke: color,
+    strokeWidth: "1.5"
+  }), /*#__PURE__*/React.createElement("circle", {
+    cx: (data.length - 1) / (data.length - 1) * width,
+    cy: height - (data[data.length - 1] - min) / range * height,
+    r: "2.5",
+    fill: color
+  }));
+}
+function saveApiKey(key) {
+  try {
+    localStorage.setItem("rop_api_key", key);
+  } catch {}
+  try {
+    sessionStorage.setItem("rop_api_key", key);
+  } catch {}
+  _memStore["__apikey__"] = key;
+}
+function loadApiKey() {
+  try {
+    const k = localStorage.getItem("rop_api_key");
+    if (k) return k;
+  } catch {}
+  try {
+    const k = sessionStorage.getItem("rop_api_key");
+    if (k) return k;
+  } catch {}
+  return _memStore["__apikey__"] || "";
+}
+
+// ─── Auth ─────────────────────────────────────────────────────────────────────
+function AuthScreen({
+  onLogin
+}) {
+  const [role, setRole] = useState(null);
+  const [name, setName] = useState("");
+  const [pin, setPin] = useState("");
+  const [pinConfirm, setPinConfirm] = useState("");
+  const [pass, setPass] = useState("");
+  const [err, setErr] = useState("");
+  const [isNew, setIsNew] = useState(null);
+  const [checking, setChecking] = useState(false);
+
+  // Normalizeaza numele: "andrei pop" => "andrei pop" (lowercase, trim, single spaces)
+  const normName = n => n.trim().toLowerCase().replace(/\s+/g, " ");
+  const nameSlug = n => normName(n).replace(/\s+/g, "_");
+
+  // Cauta in roster numele canonical (case-insensitive)
+  const findCanonical = inputName => {
+    const roster = sGet("roster") || [];
+    return roster.find(r => normName(r) === normName(inputName)) || null;
+  };
+  const [canonicalName, setCanonicalName] = useState(null);
+  const checkStudent = () => {
+    if (!name.trim()) {
+      setErr("Introdu numele tău.");
+      return;
+    }
+    if (name.trim().length < 3) {
+      setErr("Numele trebuie să aibă minim 3 caractere.");
+      return;
+    }
+    setChecking(true);
+    setErr("");
+    const found = findCanonical(name);
+    const slug = nameSlug(found || name);
+    const existing = sGet(`pin__${slug}`);
+    setCanonicalName(found);
+    setIsNew(!existing);
+    setChecking(false);
+  };
+  const loginStudent = () => {
+    const resolved = canonicalName || name.trim();
+    const slug = nameSlug(resolved);
+    const key = `pin__${slug}`;
+    if (isNew) {
+      if (!pin || pin.length < 4) {
+        setErr("PIN minim 4 cifre.");
+        return;
+      }
+      if (pin !== pinConfirm) {
+        setErr("PIN-urile nu coincid.");
+        return;
+      }
+      sSet(key, pin);
+      onLogin({
+        role: "student",
+        name: resolved
+      });
+    } else {
+      const stored = sGet(key);
+      if (pin !== stored) {
+        setErr("PIN incorect.");
+        return;
+      }
+      onLogin({
+        role: "student",
+        name: resolved
+      });
+    }
+  };
+  const loginMentor = () => {
+    if (pass !== getMentorPass()) {
+      setErr("Parolă incorectă.");
+      return;
+    }
+    onLogin({
+      role: "mentor",
+      name: "Mentor"
+    });
+  };
+  const back = () => {
+    setRole(null);
+    setErr("");
+    setIsNew(null);
+    setName("");
+    setPin("");
+    setPinConfirm("");
+  };
+  return /*#__PURE__*/React.createElement("div", {
+    style: {
+      minHeight: "100vh",
+      background: C.bg,
+      display: "flex",
+      alignItems: "center",
+      justifyContent: "center",
+      fontFamily: font
+    }
+  }, /*#__PURE__*/React.createElement("div", {
+    style: {
+      width: 420,
+      padding: "0 24px"
+    }
+  }, /*#__PURE__*/React.createElement("div", {
+    style: {
+      textAlign: "center",
+      marginBottom: 48
+    }
+  }, /*#__PURE__*/React.createElement("div", {
+    style: {
+      fontSize: 28,
+      fontWeight: 700,
+      color: C.gold,
+      letterSpacing: 2,
+      marginBottom: 6
+    }
+  }, "ROP TRADING ACADEMY"), /*#__PURE__*/React.createElement("div", {
+    style: {
+      fontSize: 10,
+      color: C.dim,
+      letterSpacing: 3
+    }
+  }, "TRADING JOURNAL \xB7 MENTOR SYSTEM")), !role ? /*#__PURE__*/React.createElement("div", null, /*#__PURE__*/React.createElement("div", {
+    style: {
+      fontSize: 11,
+      color: C.dim,
+      letterSpacing: 2,
+      textAlign: "center",
+      marginBottom: 24
+    }
+  }, "SELECTEAZ\u0102 ROLUL"), /*#__PURE__*/React.createElement("div", {
+    style: {
+      display: "grid",
+      gridTemplateColumns: "1fr 1fr",
+      gap: 12
+    }
+  }, [{
+    r: "student",
+    label: "ELEV",
+    icon: "📈",
+    desc: "Jurnal personal · analiză AI"
+  }, {
+    r: "mentor",
+    label: "MENTOR",
+    icon: "🎓",
+    desc: "Dashboard · feedback · curs"
+  }].map(({
+    r,
+    label,
+    icon,
+    desc
+  }) => /*#__PURE__*/React.createElement("div", {
+    key: r,
+    onClick: () => {
+      setRole(r);
+      setErr("");
+      setIsNew(null);
+    },
+    style: {
+      background: C.surface,
+      border: `1px solid ${r === "mentor" ? C.mentorAccent + "40" : C.gold + "40"}`,
+      padding: "28px 20px",
+      borderRadius: 2,
+      cursor: "pointer",
+      textAlign: "center"
+    }
+  }, /*#__PURE__*/React.createElement("div", {
+    style: {
+      fontSize: 28,
+      marginBottom: 10
+    }
+  }, icon), /*#__PURE__*/React.createElement("div", {
+    style: {
+      fontSize: 13,
+      fontWeight: 700,
+      color: r === "mentor" ? C.mentorAccent : C.gold,
+      marginBottom: 6
+    }
+  }, label), /*#__PURE__*/React.createElement("div", {
+    style: {
+      fontSize: 10,
+      color: C.dim,
+      lineHeight: 1.6
+    }
+  }, desc))))) : role === "mentor" ? /*#__PURE__*/React.createElement("div", null, /*#__PURE__*/React.createElement("div", {
+    style: {
+      display: "flex",
+      alignItems: "center",
+      gap: 12,
+      marginBottom: 28
+    }
+  }, /*#__PURE__*/React.createElement("button", {
+    onClick: back,
+    style: {
+      background: "none",
+      border: "none",
+      color: C.dim,
+      cursor: "pointer",
+      fontFamily: font,
+      fontSize: 11
+    }
+  }, "\u2190 \xCENAPOI"), /*#__PURE__*/React.createElement(Badge, {
+    label: "MENTOR",
+    color: C.mentorAccent
+  })), /*#__PURE__*/React.createElement("div", {
+    style: {
+      marginBottom: 16
+    }
+  }, /*#__PURE__*/React.createElement(SectionTitle, null, "Parola mentor"), /*#__PURE__*/React.createElement(Input, {
+    value: pass,
+    onChange: setPass,
+    placeholder: "\u2022\u2022\u2022\u2022\u2022\u2022\u2022\u2022",
+    type: "password"
+  })), err && /*#__PURE__*/React.createElement("div", {
+    style: {
+      color: C.red,
+      fontSize: 11,
+      marginBottom: 12,
+      padding: "8px 12px",
+      background: C.red + "10",
+      border: `1px solid ${C.red}30`
+    }
+  }, err), /*#__PURE__*/React.createElement(Btn, {
+    onClick: loginMentor,
+    variant: "mentor"
+  }, "ACCESEAZ\u0102 DASHBOARD \u2192")) : /*#__PURE__*/React.createElement("div", null, /*#__PURE__*/React.createElement("div", {
+    style: {
+      display: "flex",
+      alignItems: "center",
+      gap: 12,
+      marginBottom: 28
+    }
+  }, /*#__PURE__*/React.createElement("button", {
+    onClick: back,
+    style: {
+      background: "none",
+      border: "none",
+      color: C.dim,
+      cursor: "pointer",
+      fontFamily: font,
+      fontSize: 11
+    }
+  }, "\u2190 \xCENAPOI"), /*#__PURE__*/React.createElement(Badge, {
+    label: "ELEV",
+    color: C.gold
+  })), isNew === null && /*#__PURE__*/React.createElement("div", null, /*#__PURE__*/React.createElement("div", {
+    style: {
+      marginBottom: 16
+    }
+  }, /*#__PURE__*/React.createElement(SectionTitle, null, "Numele t\u0103u complet"), /*#__PURE__*/React.createElement(Input, {
+    value: name,
+    onChange: v => {
+      setName(v);
+      setErr("");
+    },
+    placeholder: "ex: Andrei Popescu"
+  })), err && /*#__PURE__*/React.createElement("div", {
+    style: {
+      color: C.red,
+      fontSize: 11,
+      marginBottom: 12,
+      padding: "8px 12px",
+      background: C.red + "10",
+      border: `1px solid ${C.red}30`
+    }
+  }, err), /*#__PURE__*/React.createElement(Btn, {
+    onClick: checkStudent,
+    disabled: checking
+  }, checking ? "SE VERIFICĂ..." : "CONTINUĂ →")), isNew === true && /*#__PURE__*/React.createElement("div", null, /*#__PURE__*/React.createElement("div", {
+    style: {
+      marginBottom: 14,
+      padding: "10px 14px",
+      background: C.green + "10",
+      border: `1px solid ${C.green}30`,
+      fontSize: 11,
+      color: C.green
+    }
+  }, "Cont nou pentru ", /*#__PURE__*/React.createElement("strong", null, name), ". Seteaz\u0103 un PIN personal."), /*#__PURE__*/React.createElement("div", {
+    style: {
+      marginBottom: 12
+    }
+  }, /*#__PURE__*/React.createElement(SectionTitle, null, "PIN (minim 4 cifre)"), /*#__PURE__*/React.createElement(Input, {
+    value: pin,
+    onChange: setPin,
+    placeholder: "\u2022\u2022\u2022\u2022",
+    type: "password"
+  })), /*#__PURE__*/React.createElement("div", {
+    style: {
+      marginBottom: 16
+    }
+  }, /*#__PURE__*/React.createElement(SectionTitle, null, "Confirm\u0103 PIN"), /*#__PURE__*/React.createElement(Input, {
+    value: pinConfirm,
+    onChange: setPinConfirm,
+    placeholder: "\u2022\u2022\u2022\u2022",
+    type: "password"
+  })), err && /*#__PURE__*/React.createElement("div", {
+    style: {
+      color: C.red,
+      fontSize: 11,
+      marginBottom: 12,
+      padding: "8px 12px",
+      background: C.red + "10",
+      border: `1px solid ${C.red}30`
+    }
+  }, err), /*#__PURE__*/React.createElement(Btn, {
+    onClick: loginStudent
+  }, "CREEAZ\u0102 CONTUL \u2192")), isNew === false && /*#__PURE__*/React.createElement("div", null, /*#__PURE__*/React.createElement("div", {
+    style: {
+      marginBottom: 14,
+      padding: "10px 14px",
+      background: C.gold + "10",
+      border: `1px solid ${C.gold}30`,
+      fontSize: 11,
+      color: C.gold
+    }
+  }, "Bine ai revenit, ", /*#__PURE__*/React.createElement("strong", null, canonicalName || name), ".", canonicalName && normName(canonicalName) !== normName(name) && /*#__PURE__*/React.createElement("span", {
+    style: {
+      color: C.dim,
+      fontSize: 10,
+      display: "block",
+      marginTop: 4
+    }
+  }, "Cont g\u0103sit pentru \"", canonicalName, "\"")), /*#__PURE__*/React.createElement("div", {
+    style: {
+      marginBottom: 16
+    }
+  }, /*#__PURE__*/React.createElement(SectionTitle, null, "PIN"), /*#__PURE__*/React.createElement(Input, {
+    value: pin,
+    onChange: setPin,
+    placeholder: "\u2022\u2022\u2022\u2022",
+    type: "password"
+  })), err && /*#__PURE__*/React.createElement("div", {
+    style: {
+      color: C.red,
+      fontSize: 11,
+      marginBottom: 12,
+      padding: "8px 12px",
+      background: C.red + "10",
+      border: `1px solid ${C.red}30`
+    }
+  }, err), /*#__PURE__*/React.createElement(Btn, {
+    onClick: loginStudent
+  }, "INTR\u0102 \xCEN JURNAL \u2192")))));
+}
+
+// ─── Student View ─────────────────────────────────────────────────────────────
+
+// ─── Chart Components ─────────────────────────────────────────────────────────
+function LineChart({
+  data,
+  width = 600,
+  height = 140,
+  color = C.green,
+  label = "",
+  zero = true
+}) {
+  if (!data || data.length < 2) return /*#__PURE__*/React.createElement("div", {
+    style: {
+      height,
+      display: "flex",
+      alignItems: "center",
+      justifyContent: "center",
+      color: C.dim,
+      fontSize: 11
+    }
+  }, "Date insuficiente");
+  const min = Math.min(...data, zero ? 0 : Infinity);
+  const max = Math.max(...data, zero ? 0 : -Infinity);
+  const range = max - min || 1;
+  const pad = 8;
+  const W = width - pad * 2,
+    H = height - pad * 2;
+  const px = i => pad + i / (data.length - 1) * W;
+  const py = v => pad + H - (v - min) / range * H;
+  const pts = data.map((v, i) => `${px(i)},${py(v)}`).join(" ");
+  const fillPts = `${px(0)},${py(min)} ` + pts + ` ${px(data.length - 1)},${py(min)}`;
+  const lastColor = data[data.length - 1] >= 0 ? C.green : C.red;
+  const zeroY = zero ? py(0) : null;
+  return /*#__PURE__*/React.createElement("svg", {
+    width: "100%",
+    viewBox: `0 0 ${width} ${height}`,
+    style: {
+      overflow: "visible"
+    }
+  }, zeroY !== null && /*#__PURE__*/React.createElement("line", {
+    x1: pad,
+    y1: zeroY,
+    x2: width - pad,
+    y2: zeroY,
+    stroke: C.border,
+    strokeWidth: "1",
+    strokeDasharray: "4,4"
+  }), /*#__PURE__*/React.createElement("polyline", {
+    points: fillPts,
+    fill: lastColor + "15",
+    stroke: "none"
+  }), /*#__PURE__*/React.createElement("polyline", {
+    points: pts,
+    fill: "none",
+    stroke: lastColor,
+    strokeWidth: "2"
+  }), /*#__PURE__*/React.createElement("circle", {
+    cx: px(data.length - 1),
+    cy: py(data[data.length - 1]),
+    r: "4",
+    fill: lastColor
+  }), label && /*#__PURE__*/React.createElement("text", {
+    x: pad + 4,
+    y: pad + 14,
+    fill: C.dim,
+    fontSize: "10",
+    fontFamily: "IBM Plex Mono"
+  }, label));
+}
+function BarChart({
+  data,
+  labels,
+  width = 600,
+  height = 100,
+  colorFn
+}) {
+  if (!data || !data.length) return null;
+  const max = Math.max(...data.map(Math.abs), 1);
+  const pad = 4;
+  const bw = (width - pad * 2) / data.length;
+  const mid = height / 2;
+  return /*#__PURE__*/React.createElement("svg", {
+    width: "100%",
+    viewBox: `0 0 ${width} ${height}`,
+    style: {
+      overflow: "visible"
+    }
+  }, /*#__PURE__*/React.createElement("line", {
+    x1: pad,
+    y1: mid,
+    x2: width - pad,
+    y2: mid,
+    stroke: C.border,
+    strokeWidth: "1"
+  }), data.map((v, i) => {
+    const bh = Math.abs(v) / max * (mid - 6);
+    const x = pad + i * bw + bw * 0.1;
+    const bW = bw * 0.8;
+    const col = colorFn ? colorFn(v) : v >= 0 ? C.green : C.red;
+    return /*#__PURE__*/React.createElement("g", {
+      key: i
+    }, /*#__PURE__*/React.createElement("rect", {
+      x: x,
+      y: v >= 0 ? mid - bh : mid,
+      width: bW,
+      height: bh,
+      fill: col + "cc",
+      rx: "1"
+    }), labels && labels[i] && data.length <= 20 && /*#__PURE__*/React.createElement("text", {
+      x: x + bW / 2,
+      y: height - 2,
+      textAnchor: "middle",
+      fill: C.dim,
+      fontSize: "8",
+      fontFamily: "IBM Plex Mono"
+    }, labels[i]));
+  }));
+}
+
+// ─── Student History Tab ──────────────────────────────────────────────────────
+function StudentHistoryTab({
+  history,
+  onViewSession
+}) {
+  const [viewIdx, setViewIdx] = useState(null);
+  if (!history.length) return /*#__PURE__*/React.createElement("div", {
+    style: {
+      textAlign: "center",
+      padding: "80px 0",
+      color: C.dim
+    }
+  }, /*#__PURE__*/React.createElement("div", {
+    style: {
+      fontSize: 40,
+      marginBottom: 16
+    }
+  }, "\uD83D\uDCC8"), /*#__PURE__*/React.createElement("div", {
+    style: {
+      fontSize: 12,
+      letterSpacing: 2
+    }
+  }, "NICIO SESIUNE \xCENREGISTRAT\u0102"), /*#__PURE__*/React.createElement("div", {
+    style: {
+      fontSize: 11,
+      color: C.dim + "80",
+      marginTop: 8
+    }
+  }, "\xCEncarc\u0103 primul CSV pentru a \xEEncepe."));
+  if (viewIdx !== null) {
+    var _sess$analysis, _sess$analysis2, _sess$analysis3, _s$accountPct;
+    const sess = history[viewIdx];
+    const s = sess.stats;
+    const vC = ((_sess$analysis = sess.analysis) === null || _sess$analysis === void 0 ? void 0 : _sess$analysis.verdict) === "BUNĂ" ? C.green : ((_sess$analysis2 = sess.analysis) === null || _sess$analysis2 === void 0 ? void 0 : _sess$analysis2.verdict) === "SLABĂ" ? C.red : C.gold;
+    return /*#__PURE__*/React.createElement("div", null, /*#__PURE__*/React.createElement("div", {
+      style: {
+        display: "flex",
+        alignItems: "center",
+        gap: 16,
+        marginBottom: 28
+      }
+    }, /*#__PURE__*/React.createElement("button", {
+      onClick: () => setViewIdx(null),
+      style: {
+        background: "none",
+        border: "none",
+        color: C.dim,
+        cursor: "pointer",
+        fontFamily: font,
+        fontSize: 11
+      }
+    }, "\u2190 \xCENAPOI LA ISTORIC"), /*#__PURE__*/React.createElement(Badge, {
+      label: sess.date
+    }), ((_sess$analysis3 = sess.analysis) === null || _sess$analysis3 === void 0 ? void 0 : _sess$analysis3.verdict) && /*#__PURE__*/React.createElement(Badge, {
+      label: sess.analysis.verdict,
+      color: vC
+    })), /*#__PURE__*/React.createElement("div", {
+      style: {
+        display: "grid",
+        gridTemplateColumns: "repeat(3,1fr)",
+        gap: 10,
+        marginBottom: 10
+      }
+    }, /*#__PURE__*/React.createElement(StatTile, {
+      label: "Win Rate",
+      value: `${s.winRate.toFixed(1)}%`,
+      color: s.winRate >= 50 ? C.green : C.red,
+      sub: `${s.wins}W / ${s.losses}L`
+    }), /*#__PURE__*/React.createElement(StatTile, {
+      label: "Puncte",
+      value: `${(s.totalPoints || 0) >= 0 ? "+" : ""}${(s.totalPoints || 0).toFixed(1)}`,
+      color: (s.totalPoints || 0) >= 0 ? C.green : C.red,
+      sub: `RR pct: ${(s.rrPts || 0).toFixed(2)}`
+    }), /*#__PURE__*/React.createElement(StatTile, {
+      label: "P&L",
+      value: `${s.totalPnl >= 0 ? "+" : ""}${s.totalPnl.toFixed(2)}`,
+      color: s.totalPnl >= 0 ? C.green : C.red,
+      sub: `RR: ${s.rr.toFixed(2)}`
+    })), sess.accountSize > 0 && s.accountAfter && /*#__PURE__*/React.createElement("div", {
+      style: {
+        display: "grid",
+        gridTemplateColumns: "repeat(3,1fr)",
+        gap: 10,
+        marginBottom: 24
+      }
+    }, /*#__PURE__*/React.createElement(StatTile, {
+      label: "Cont \xEEnainte",
+      value: sess.accountSize.toLocaleString(),
+      color: C.dim
+    }), /*#__PURE__*/React.createElement(StatTile, {
+      label: "Cont dup\u0103",
+      value: s.accountAfter.toFixed(2),
+      color: s.accountPct >= 0 ? C.green : C.red
+    }), /*#__PURE__*/React.createElement(StatTile, {
+      label: "Varia\u021Bie",
+      value: `${s.accountPct >= 0 ? "+" : ""}${(_s$accountPct = s.accountPct) === null || _s$accountPct === void 0 ? void 0 : _s$accountPct.toFixed(2)}%`,
+      color: s.accountPct >= 0 ? C.green : C.red
+    })), sess.analysis && /*#__PURE__*/React.createElement("div", {
+      style: {
+        marginBottom: 24
+      }
+    }, /*#__PURE__*/React.createElement(SectionTitle, null, "Analiza AI \u2014 ", sess.date), /*#__PURE__*/React.createElement("div", {
+      style: {
+        background: C.surface,
+        border: `1px solid ${C.border}`,
+        padding: "16px 20px",
+        fontSize: 12,
+        color: C.text,
+        lineHeight: 1.8,
+        marginBottom: 16
+      }
+    }, sess.analysis.rezumat), /*#__PURE__*/React.createElement("div", {
+      style: {
+        display: "grid",
+        gridTemplateColumns: "1fr 1fr",
+        gap: 12,
+        marginBottom: 16
+      }
+    }, /*#__PURE__*/React.createElement("div", null, /*#__PURE__*/React.createElement("div", {
+      style: {
+        fontSize: 9,
+        color: C.green,
+        letterSpacing: 2,
+        marginBottom: 8
+      }
+    }, "PUNCTE FORTE"), (sess.analysis.puncte_forte || []).map((p, i) => /*#__PURE__*/React.createElement("div", {
+      key: i,
+      style: {
+        fontSize: 11,
+        color: C.dim,
+        padding: "7px 12px",
+        borderLeft: `2px solid ${C.green}`,
+        marginBottom: 5,
+        background: C.surface
+      }
+    }, p))), /*#__PURE__*/React.createElement("div", null, /*#__PURE__*/React.createElement("div", {
+      style: {
+        fontSize: 9,
+        color: C.red,
+        letterSpacing: 2,
+        marginBottom: 8
+      }
+    }, "ERORI"), (sess.analysis.erori_identificate || []).map((e, i) => /*#__PURE__*/React.createElement("div", {
+      key: i,
+      style: {
+        fontSize: 11,
+        color: C.dim,
+        padding: "7px 12px",
+        borderLeft: `2px solid ${C.red}`,
+        marginBottom: 5,
+        background: C.surface
+      }
+    }, e)))), sess.analysis.focus_principal && /*#__PURE__*/React.createElement("div", {
+      style: {
+        padding: "14px 20px",
+        background: C.gold + "08",
+        border: `1px solid ${C.gold}25`,
+        borderLeft: `4px solid ${C.gold}`
+      }
+    }, /*#__PURE__*/React.createElement("div", {
+      style: {
+        fontSize: 9,
+        color: C.gold + "80",
+        letterSpacing: 2,
+        marginBottom: 6
+      }
+    }, "FOCUS"), /*#__PURE__*/React.createElement("div", {
+      style: {
+        fontSize: 13,
+        color: C.gold
+      }
+    }, sess.analysis.focus_principal))), sess.mentorFeedback && /*#__PURE__*/React.createElement("div", {
+      style: {
+        padding: "16px 20px",
+        background: C.mentorAccent + "08",
+        border: `1px solid ${C.mentorAccent}25`,
+        borderLeft: `4px solid ${C.mentorAccent}`,
+        marginBottom: 20
+      }
+    }, /*#__PURE__*/React.createElement("div", {
+      style: {
+        fontSize: 9,
+        color: C.mentorAccent,
+        letterSpacing: 2,
+        marginBottom: 8
+      }
+    }, "FEEDBACK MENTOR"), /*#__PURE__*/React.createElement("div", {
+      style: {
+        fontSize: 12,
+        color: "#c7d2fe",
+        lineHeight: 1.7
+      }
+    }, sess.mentorFeedback)), sess.notes && /*#__PURE__*/React.createElement("div", {
+      style: {
+        padding: "14px 18px",
+        background: C.surface,
+        border: `1px solid ${C.border}`,
+        marginBottom: 20
+      }
+    }, /*#__PURE__*/React.createElement("div", {
+      style: {
+        fontSize: 9,
+        color: C.dim,
+        letterSpacing: 2,
+        marginBottom: 6
+      }
+    }, "NOTELE MELE"), /*#__PURE__*/React.createElement("div", {
+      style: {
+        fontSize: 12,
+        color: C.text,
+        lineHeight: 1.6
+      }
+    }, sess.notes)), /*#__PURE__*/React.createElement("div", {
+      style: {
+        display: "flex",
+        gap: 12
+      }
+    }, viewIdx > 0 && /*#__PURE__*/React.createElement(Btn, {
+      variant: "ghost",
+      small: true,
+      onClick: () => setViewIdx(viewIdx - 1)
+    }, "\u2190 Sesiunea anterioar\u0103"), viewIdx < history.length - 1 && /*#__PURE__*/React.createElement(Btn, {
+      variant: "ghost",
+      small: true,
+      onClick: () => setViewIdx(viewIdx + 1)
+    }, "Sesiunea urm\u0103toare \u2192")));
+  }
+
+  // Calcule pentru grafice
+  const pnlCumul = history.reduce((acc, s) => [...acc, (acc[acc.length - 1] || 0) + s.stats.totalPnl], []);
+  const pctCumul = history.reduce((acc, s) => [...acc, (acc[acc.length - 1] || 0) + (s.stats.totalPoints || 0)], []);
+  const wrArr = history.map(s => s.stats.winRate);
+  const pnlArr = history.map(s => s.stats.totalPnl);
+  const pctArr = history.map(s => s.stats.totalPoints || 0);
+  const labels = history.map(s => s.date.split(".").slice(0, 2).join("."));
+  const avgWr = wrArr.reduce((a, b) => a + b, 0) / wrArr.length;
+  const totalPnl = pnlCumul[pnlCumul.length - 1] || 0;
+  const totalPct = pctCumul[pctCumul.length - 1] || 0;
+  const bestSess = history.reduce((b, s) => s.stats.totalPnl > b.stats.totalPnl ? s : b, history[0]);
+  const worstSess = history.reduce((b, s) => s.stats.totalPnl < b.stats.totalPnl ? s : b, history[0]);
+  const streak = (() => {
+    let s = 0;
+    for (let i = history.length - 1; i >= 0; i--) {
+      if (history[i].stats.totalPnl > 0) s++;else break;
+    }
+    return s;
+  })();
+  return /*#__PURE__*/React.createElement("div", null, /*#__PURE__*/React.createElement("div", {
+    style: {
+      display: "grid",
+      gridTemplateColumns: "repeat(4,1fr)",
+      gap: 10,
+      marginBottom: 28
+    }
+  }, /*#__PURE__*/React.createElement(StatTile, {
+    label: "Sesiuni totale",
+    value: history.length,
+    color: C.gold
+  }), /*#__PURE__*/React.createElement(StatTile, {
+    label: "P&L cumulat",
+    value: `${totalPnl >= 0 ? "+" : ""}${totalPnl.toFixed(2)}`,
+    color: totalPnl >= 0 ? C.green : C.red
+  }), /*#__PURE__*/React.createElement(StatTile, {
+    label: "Puncte cumulate",
+    value: `${totalPct >= 0 ? "+" : ""}${totalPct.toFixed(0)}`,
+    color: totalPct >= 0 ? C.green : C.red
+  }), /*#__PURE__*/React.createElement(StatTile, {
+    label: "WR mediu",
+    value: `${avgWr.toFixed(1)}%`,
+    color: avgWr >= 50 ? C.green : C.red,
+    sub: streak > 1 ? `${streak} sesiuni pozitive la rând` : ""
+  })), /*#__PURE__*/React.createElement("div", {
+    style: {
+      background: C.surface,
+      border: `1px solid ${C.border}`,
+      padding: "20px",
+      marginBottom: 16
+    }
+  }, /*#__PURE__*/React.createElement("div", {
+    style: {
+      fontSize: 9,
+      color: C.dim,
+      letterSpacing: 2,
+      marginBottom: 16
+    }
+  }, "P&L CUMULAT"), /*#__PURE__*/React.createElement(LineChart, {
+    data: pnlCumul,
+    height: 130,
+    label: "P&L $"
+  })), /*#__PURE__*/React.createElement("div", {
+    style: {
+      display: "grid",
+      gridTemplateColumns: "1fr 1fr",
+      gap: 16,
+      marginBottom: 16
+    }
+  }, /*#__PURE__*/React.createElement("div", {
+    style: {
+      background: C.surface,
+      border: `1px solid ${C.border}`,
+      padding: "20px"
+    }
+  }, /*#__PURE__*/React.createElement("div", {
+    style: {
+      fontSize: 9,
+      color: C.dim,
+      letterSpacing: 2,
+      marginBottom: 16
+    }
+  }, "PUNCTE PER SESIUNE"), /*#__PURE__*/React.createElement(BarChart, {
+    data: pctArr,
+    labels: labels,
+    height: 100,
+    colorFn: v => v >= 0 ? C.green : C.red
+  })), /*#__PURE__*/React.createElement("div", {
+    style: {
+      background: C.surface,
+      border: `1px solid ${C.border}`,
+      padding: "20px"
+    }
+  }, /*#__PURE__*/React.createElement("div", {
+    style: {
+      fontSize: 9,
+      color: C.dim,
+      letterSpacing: 2,
+      marginBottom: 16
+    }
+  }, "WIN RATE TREND (%)"), /*#__PURE__*/React.createElement(LineChart, {
+    data: wrArr,
+    height: 100,
+    zero: false,
+    color: C.blue
+  }), /*#__PURE__*/React.createElement("div", {
+    style: {
+      display: "flex",
+      justifyContent: "space-between",
+      marginTop: 8
+    }
+  }, /*#__PURE__*/React.createElement("span", {
+    style: {
+      fontSize: 10,
+      color: C.dim
+    }
+  }, "Min: ", Math.min(...wrArr).toFixed(0), "%"), /*#__PURE__*/React.createElement("span", {
+    style: {
+      fontSize: 10,
+      color: C.gold
+    }
+  }, "Avg: ", avgWr.toFixed(1), "%"), /*#__PURE__*/React.createElement("span", {
+    style: {
+      fontSize: 10,
+      color: C.dim
+    }
+  }, "Max: ", Math.max(...wrArr).toFixed(0), "%")))), /*#__PURE__*/React.createElement("div", {
+    style: {
+      display: "grid",
+      gridTemplateColumns: "1fr 1fr",
+      gap: 16,
+      marginBottom: 28
+    }
+  }, /*#__PURE__*/React.createElement("div", {
+    style: {
+      background: C.surface,
+      border: `1px solid ${C.green}30`,
+      borderLeft: `4px solid ${C.green}`,
+      padding: "14px 18px"
+    }
+  }, /*#__PURE__*/React.createElement("div", {
+    style: {
+      fontSize: 9,
+      color: C.green,
+      letterSpacing: 2,
+      marginBottom: 6
+    }
+  }, "CEA MAI BUN\u0102 SESIUNE"), /*#__PURE__*/React.createElement("div", {
+    style: {
+      fontSize: 16,
+      fontWeight: 700,
+      color: C.green
+    }
+  }, "+", bestSess.stats.totalPnl.toFixed(2)), /*#__PURE__*/React.createElement("div", {
+    style: {
+      fontSize: 11,
+      color: C.dim,
+      marginTop: 4
+    }
+  }, bestSess.date, " \xB7 WR ", bestSess.stats.winRate.toFixed(0), "% \xB7 ", (bestSess.stats.totalPoints || 0) >= 0 ? "+" : "", (bestSess.stats.totalPoints || 0).toFixed(0), " pct")), /*#__PURE__*/React.createElement("div", {
+    style: {
+      background: C.surface,
+      border: `1px solid ${C.red}30`,
+      borderLeft: `4px solid ${C.red}`,
+      padding: "14px 18px"
+    }
+  }, /*#__PURE__*/React.createElement("div", {
+    style: {
+      fontSize: 9,
+      color: C.red,
+      letterSpacing: 2,
+      marginBottom: 6
+    }
+  }, "CEA MAI SLAB\u0102 SESIUNE"), /*#__PURE__*/React.createElement("div", {
+    style: {
+      fontSize: 16,
+      fontWeight: 700,
+      color: C.red
+    }
+  }, worstSess.stats.totalPnl.toFixed(2)), /*#__PURE__*/React.createElement("div", {
+    style: {
+      fontSize: 11,
+      color: C.dim,
+      marginTop: 4
+    }
+  }, worstSess.date, " \xB7 WR ", worstSess.stats.winRate.toFixed(0), "% \xB7 ", (worstSess.stats.totalPoints || 0) >= 0 ? "+" : "", (worstSess.stats.totalPoints || 0).toFixed(0), " pct"))), /*#__PURE__*/React.createElement(SectionTitle, null, "Toate sesiunile (", history.length, ")"), [...history].reverse().map((sess, ri) => {
+    var _sess$analysis4, _sess$analysis5, _sess$analysis6;
+    const idx = history.length - 1 - ri;
+    const s = sess.stats;
+    const vC = ((_sess$analysis4 = sess.analysis) === null || _sess$analysis4 === void 0 ? void 0 : _sess$analysis4.verdict) === "BUNĂ" ? C.green : ((_sess$analysis5 = sess.analysis) === null || _sess$analysis5 === void 0 ? void 0 : _sess$analysis5.verdict) === "SLABĂ" ? C.red : C.gold;
+    return /*#__PURE__*/React.createElement("div", {
+      key: idx,
+      onClick: () => setViewIdx(idx),
+      style: {
+        display: "flex",
+        justifyContent: "space-between",
+        alignItems: "center",
+        padding: "12px 16px",
+        background: C.surface,
+        border: `1px solid ${C.border}`,
+        marginBottom: 6,
+        cursor: "pointer",
+        borderRadius: 2
+      },
+      onMouseEnter: e => e.currentTarget.style.borderColor = C.gold + "50",
+      onMouseLeave: e => e.currentTarget.style.borderColor = C.border
+    }, /*#__PURE__*/React.createElement("div", {
+      style: {
+        display: "flex",
+        gap: 14,
+        alignItems: "center"
+      }
+    }, /*#__PURE__*/React.createElement("span", {
+      style: {
+        fontSize: 11,
+        color: C.dim,
+        minWidth: 75
+      }
+    }, sess.date), ((_sess$analysis6 = sess.analysis) === null || _sess$analysis6 === void 0 ? void 0 : _sess$analysis6.verdict) && /*#__PURE__*/React.createElement(Badge, {
+      label: sess.analysis.verdict,
+      color: vC
+    }), sess.mentorFeedback && /*#__PURE__*/React.createElement("span", {
+      style: {
+        fontSize: 10,
+        color: C.mentorAccent
+      }
+    }, "\uD83D\uDCAC")), /*#__PURE__*/React.createElement("div", {
+      style: {
+        display: "flex",
+        gap: 20,
+        alignItems: "center"
+      }
+    }, /*#__PURE__*/React.createElement("span", {
+      style: {
+        fontSize: 11,
+        color: (s.totalPoints || 0) >= 0 ? C.green + "90" : C.red + "90"
+      }
+    }, (s.totalPoints || 0) >= 0 ? "+" : "", (s.totalPoints || 0).toFixed(1), " pct"), /*#__PURE__*/React.createElement("span", {
+      style: {
+        fontSize: 12,
+        fontWeight: 700,
+        color: s.totalPnl >= 0 ? C.green : C.red,
+        minWidth: 70,
+        textAlign: "right"
+      }
+    }, s.totalPnl >= 0 ? "+" : "", s.totalPnl.toFixed(2)), /*#__PURE__*/React.createElement("span", {
+      style: {
+        fontSize: 11,
+        color: C.dim
+      }
+    }, "WR ", s.winRate.toFixed(0), "%"), /*#__PURE__*/React.createElement("span", {
+      style: {
+        fontSize: 11,
+        color: C.dim
+      }
+    }, "RR ", s.rr.toFixed(1)), /*#__PURE__*/React.createElement("span", {
+      style: {
+        fontSize: 11,
+        color: C.dim + "60"
+      }
+    }, "\u2192")));
+  }));
+}
+function StudentView({
+  user,
+  onLogout
+}) {
+  var _stats$accountAfter2, _stats$accountPct2, _stats$accountPct3;
+  const [mainTab, setMainTab] = useState("upload"); // upload | history
+  const [step, setStep] = useState("home");
+  const [trades, setTrades] = useState([]);
+  const [stats, setStats] = useState(null);
+  const [analysis, setAnalysis] = useState(null);
+  const [notes, setNotes] = useState("");
+  const [history, setHistory] = useState([]);
+  const [objectives, setObjectives] = useState("");
+  const [csvName, setCsvName] = useState("");
+  const [drag, setDrag] = useState(false);
+  const [err, setErr] = useState("");
+  const [accountSize, setAccountSize] = useState("");
+  const [savedAccount, setSavedAccount] = useState(0);
+  const [showManual, setShowManual] = useState(false);
+  const [manualTrades, setManualTrades] = useState([]);
+  const [manualDraft, setManualDraft] = useState({
+    symbol: "US30",
+    side: "BUY",
+    entryPrice: "",
+    exitPrice: "",
+    qty: "0.1"
+  });
+  const fileRef = useRef();
+  const slug = user.name.toLowerCase().replace(/\s+/g, "_");
+  useEffect(() => {
+    const hist = sGet(`sessions__${slug}`);
+    const obj = sGet(`objectives__${slug}`);
+    const acc = sGet(`account__${slug}`);
+    if (hist) setHistory(hist);
+    if (obj) setObjectives(obj);
+    if (acc) {
+      setSavedAccount(acc);
+      setAccountSize(String(acc));
+    }
+    const roster = sGet("roster") || [];
+    if (!roster.includes(user.name)) sSet("roster", [...roster, user.name]);
+  }, []);
+  const processFile = useCallback(async file => {
+    setErr("");
+    setCsvName(file.name);
+    const rows = parseCSV(await file.text());
+    if (!rows.length) {
+      setErr("CSV invalid. TradingView → broker → Export Data → History.");
+      return;
+    }
+    const acc = parseFloat(accountSize) || savedAccount || 0;
+    const paired = pairTrades(rows);
+    if (!paired.length) {
+      setErr("Nu s-au detectat traduri pereche.");
+      return;
+    }
+    setTrades(paired);
+    setStats(calcStats(paired, acc));
+    setStep("preview");
+  }, [accountSize, savedAccount]);
+  useEffect(() => {
+    if (step === "preview" && trades.length) setStats(calcStats(trades, parseFloat(accountSize) || 0));
+  }, [accountSize, step]);
+  const addManualTrade = () => {
+    const ep = parseFloat(manualDraft.entryPrice);
+    const xp = parseFloat(manualDraft.exitPrice);
+    const qty = parseFloat(manualDraft.qty) || 0.1;
+    if (!ep || !xp) {
+      setErr("Introdu prețurile de intrare și ieșire.");
+      return;
+    }
+    setErr("");
+    const pnl = manualDraft.side === "BUY" ? (xp - ep) * qty : (ep - xp) * qty;
+    const points = manualDraft.side === "BUY" ? xp - ep : ep - xp;
+    const t = {
+      symbol: manualDraft.symbol.toUpperCase() || "US30",
+      side: manualDraft.side,
+      entryPrice: ep,
+      exitPrice: xp,
+      qty,
+      pnl,
+      points,
+      win: pnl > 0,
+      entryTime: "",
+      exitTime: ""
+    };
+    setManualTrades(prev => [...prev, t]);
+    setManualDraft(d => ({
+      ...d,
+      entryPrice: "",
+      exitPrice: ""
+    }));
+  };
+  const removeManualTrade = idx => setManualTrades(prev => prev.filter((_, i) => i !== idx));
+  const submitManualTrades = () => {
+    if (!manualTrades.length) {
+      setErr("Adaugă cel puțin un trade.");
+      return;
+    }
+    const acc = parseFloat(accountSize) || savedAccount || 0;
+    setTrades(manualTrades);
+    setStats(calcStats(manualTrades, acc));
+    setCsvName("Introducere manuală");
+    setShowManual(false);
+    setStep("preview");
+  };
+  const handleAnalyze = async () => {
+    setStep("analyzing");
+    const acc = parseFloat(accountSize) || savedAccount || 0;
+    try {
+      const result = await fetchAIAnalysis(trades, stats, history, notes, objectives, acc);
+      setAnalysis(result);
+      if (acc > 0 && acc !== savedAccount) {
+        setSavedAccount(acc);
+        sSet(`account__${slug}`, acc);
+      }
+      const session = {
+        date: new Date().toLocaleDateString("ro-RO"),
+        stats,
+        tradeCount: trades.length,
+        analysis: result,
+        notes,
+        accountSize: acc
+      };
+      const newHist = [...history, session].slice(-60);
+      setHistory(newHist);
+      sSet(`sessions__${slug}`, newHist);
+      setStep("report");
+    } catch (e) {
+      setErr("Eroare AI: " + e.message);
+      setStep("preview");
+    }
+  };
+  const handleSaveWithoutAI = () => {
+    const acc = parseFloat(accountSize) || savedAccount || 0;
+    if (acc > 0 && acc !== savedAccount) {
+      setSavedAccount(acc);
+      sSet(`account__${slug}`, acc);
+    }
+    const session = {
+      date: new Date().toLocaleDateString("ro-RO"),
+      stats,
+      tradeCount: trades.length,
+      analysis: null,
+      notes,
+      accountSize: acc
+    };
+    const newHist = [...history, session].slice(-60);
+    setHistory(newHist);
+    sSet(`sessions__${slug}`, newHist);
+    reset();
+    setMainTab("history");
+  };
+  const reset = () => {
+    setStep("home");
+    setTrades([]);
+    setStats(null);
+    setAnalysis(null);
+    setNotes("");
+    setErr("");
+    setCsvName("");
+  };
+  const vC = (analysis === null || analysis === void 0 ? void 0 : analysis.verdict) === "BUNĂ" ? C.green : (analysis === null || analysis === void 0 ? void 0 : analysis.verdict) === "SLABĂ" ? C.red : C.gold;
+  return /*#__PURE__*/React.createElement("div", {
+    style: {
+      minHeight: "100vh",
+      background: C.bg,
+      fontFamily: font
+    }
+  }, /*#__PURE__*/React.createElement("div", {
+    style: {
+      background: C.surface,
+      borderBottom: `1px solid ${C.border}`,
+      padding: "14px 32px",
+      display: "flex",
+      justifyContent: "space-between",
+      alignItems: "center"
+    }
+  }, /*#__PURE__*/React.createElement("div", {
+    style: {
+      display: "flex",
+      alignItems: "center",
+      gap: 16
+    }
+  }, /*#__PURE__*/React.createElement("span", {
+    style: {
+      fontSize: 14,
+      fontWeight: 700,
+      color: C.gold,
+      letterSpacing: 2
+    }
+  }, "ROP TRADING ACADEMY"), /*#__PURE__*/React.createElement(Badge, {
+    label: "ELEV",
+    color: C.gold
+  }), /*#__PURE__*/React.createElement("span", {
+    style: {
+      fontSize: 12,
+      color: C.dim
+    }
+  }, user.name)), /*#__PURE__*/React.createElement("div", {
+    style: {
+      display: "flex",
+      gap: 12,
+      alignItems: "center"
+    }
+  }, savedAccount > 0 && /*#__PURE__*/React.createElement("span", {
+    style: {
+      fontSize: 11,
+      color: C.dim
+    }
+  }, "CONT: ", /*#__PURE__*/React.createElement("span", {
+    style: {
+      color: C.gold
+    }
+  }, savedAccount.toLocaleString("ro-RO"))), step !== "home" && /*#__PURE__*/React.createElement(Btn, {
+    variant: "ghost",
+    small: true,
+    onClick: reset
+  }, "\u2190 \xCENAPOI"), /*#__PURE__*/React.createElement(Btn, {
+    variant: "ghost",
+    small: true,
+    onClick: onLogout
+  }, "IE\u0218IRE"))), (step === "home" || step === "analyzing") && /*#__PURE__*/React.createElement("div", {
+    style: {
+      background: C.surface,
+      borderBottom: `1px solid ${C.border}`,
+      padding: "0 32px",
+      display: "flex",
+      gap: 0
+    }
+  }, [{
+    id: "upload",
+    label: "📊 Sesiune nouă"
+  }, {
+    id: "history",
+    label: "📈 Istoricul meu"
+  }].map(t => /*#__PURE__*/React.createElement("button", {
+    key: t.id,
+    onClick: () => {
+      setMainTab(t.id);
+    },
+    style: {
+      fontFamily: font,
+      fontSize: 11,
+      letterSpacing: 1,
+      background: "none",
+      border: "none",
+      cursor: "pointer",
+      padding: "14px 20px",
+      marginBottom: -1,
+      color: mainTab === t.id ? C.gold : C.dim,
+      borderBottom: mainTab === t.id ? `2px solid ${C.gold}` : "2px solid transparent",
+      transition: "all .15s"
+    }
+  }, t.label))), /*#__PURE__*/React.createElement("div", {
+    style: {
+      maxWidth: 960,
+      margin: "0 auto",
+      padding: "36px 24px"
+    }
+  }, objectives && step === "home" && mainTab === "upload" && /*#__PURE__*/React.createElement("div", {
+    style: {
+      background: C.mentorAccent + "08",
+      border: `1px solid ${C.mentorAccent}25`,
+      borderLeft: `4px solid ${C.mentorAccent}`,
+      padding: "14px 20px",
+      marginBottom: 28,
+      borderRadius: 2
+    }
+  }, /*#__PURE__*/React.createElement("div", {
+    style: {
+      fontSize: 9,
+      color: C.mentorAccent,
+      letterSpacing: 2,
+      marginBottom: 6
+    }
+  }, "OBIECTIVE SETATE DE MENTOR"), /*#__PURE__*/React.createElement("div", {
+    style: {
+      fontSize: 12,
+      color: "#c7d2fe",
+      lineHeight: 1.7
+    }
+  }, objectives)), step === "home" && mainTab === "upload" && /*#__PURE__*/React.createElement("div", null, /*#__PURE__*/React.createElement("div", {
+    style: {
+      marginBottom: 36
+    }
+  }, /*#__PURE__*/React.createElement("div", {
+    style: {
+      fontSize: 20,
+      fontWeight: 700,
+      color: C.text,
+      marginBottom: 8
+    }
+  }, "Bun\u0103, ", user.name.split(" ")[0], "."), /*#__PURE__*/React.createElement("div", {
+    style: {
+      fontSize: 12,
+      color: C.dim
+    }
+  }, "TradingView \u2192 ", /*#__PURE__*/React.createElement("span", {
+    style: {
+      color: C.gold
+    }
+  }, "broker \u2192 Export Data \u2192 History"), " \u2192 \xEEncarc\u0103 CSV")), /*#__PURE__*/React.createElement("div", {
+    style: {
+      marginBottom: 20,
+      display: "flex",
+      gap: 12,
+      alignItems: "flex-end"
+    }
+  }, /*#__PURE__*/React.createElement("div", {
+    style: {
+      width: 240
+    }
+  }, /*#__PURE__*/React.createElement("div", {
+    style: {
+      fontSize: 9,
+      color: C.dim,
+      letterSpacing: 2,
+      marginBottom: 8
+    }
+  }, "VALOAREA CONTULUI (op\u021Bional)"), /*#__PURE__*/React.createElement(Input, {
+    value: accountSize,
+    onChange: setAccountSize,
+    placeholder: "ex: 10000",
+    type: "number",
+    style: {
+      borderColor: savedAccount > 0 ? C.gold + "50" : C.border
+    }
+  })), /*#__PURE__*/React.createElement("div", {
+    style: {
+      fontSize: 10,
+      color: C.dim,
+      paddingBottom: 12
+    }
+  }, savedAccount > 0 ? `Salvat: ${savedAccount.toLocaleString()}` : "Introdu pentru a urmări contul")), /*#__PURE__*/React.createElement("div", {
+    onDrop: e => {
+      e.preventDefault();
+      setDrag(false);
+      e.dataTransfer.files[0] && processFile(e.dataTransfer.files[0]);
+    },
+    onDragOver: e => {
+      e.preventDefault();
+      setDrag(true);
+    },
+    onDragLeave: () => setDrag(false),
+    onClick: () => fileRef.current.click(),
+    style: {
+      border: `2px dashed ${drag ? C.gold : C.border}`,
+      borderRadius: 4,
+      padding: "60px 40px",
+      textAlign: "center",
+      cursor: "pointer",
+      background: drag ? C.gold + "05" : C.surface,
+      transition: "all .2s",
+      marginBottom: 28
+    }
+  }, /*#__PURE__*/React.createElement("div", {
+    style: {
+      fontSize: 36,
+      marginBottom: 12
+    }
+  }, "\uD83D\uDCCA"), /*#__PURE__*/React.createElement("div", {
+    style: {
+      fontSize: 13,
+      color: C.dim,
+      marginBottom: 6
+    }
+  }, "Trage CSV-ul sau click"), /*#__PURE__*/React.createElement("div", {
+    style: {
+      fontSize: 10,
+      color: C.dim + "80"
+    }
+  }, "TradingView \xB7 Trade Nation \xB7 CSV"), /*#__PURE__*/React.createElement("input", {
+    ref: fileRef,
+    type: "file",
+    accept: ".csv",
+    style: {
+      display: "none"
+    },
+    onChange: e => e.target.files[0] && processFile(e.target.files[0])
+  })), err && /*#__PURE__*/React.createElement("div", {
+    style: {
+      color: C.red,
+      fontSize: 11,
+      marginBottom: 16,
+      padding: "10px 14px",
+      background: C.red + "10",
+      border: `1px solid ${C.red}30`
+    }
+  }, err), /*#__PURE__*/React.createElement("div", {
+    style: {
+      marginBottom: 28
+    }
+  }, /*#__PURE__*/React.createElement("button", {
+    onClick: () => {
+      setShowManual(!showManual);
+      setErr("");
+      setManualTrades([]);
+    },
+    style: {
+      fontFamily: font,
+      fontSize: 10,
+      letterSpacing: 2,
+      color: showManual ? C.gold : C.dim,
+      background: "none",
+      border: `1px solid ${showManual ? C.gold + "50" : C.border}`,
+      padding: "7px 18px",
+      borderRadius: 2,
+      cursor: "pointer"
+    }
+  }, showManual ? "✕ ÎNCHIDE INTRODUCERE MANUALĂ" : "✎ INTRODU TRADURILE MANUAL")), showManual && /*#__PURE__*/React.createElement("div", {
+    style: {
+      background: C.surface,
+      border: `1px solid ${C.gold}30`,
+      borderTop: `2px solid ${C.gold}`,
+      padding: "24px",
+      marginBottom: 24
+    }
+  }, /*#__PURE__*/React.createElement("div", {
+    style: {
+      fontSize: 13,
+      fontWeight: 700,
+      color: C.gold,
+      marginBottom: 4
+    }
+  }, "Introducere manual\u0103 traduri"), /*#__PURE__*/React.createElement("div", {
+    style: {
+      fontSize: 11,
+      color: C.dim,
+      marginBottom: 20,
+      lineHeight: 1.7
+    }
+  }, "Introdu fiecare trade individual. Adaug\u0103 toate tradurile sesiunii, apoi apas\u0103 \"Continu\u0103\"."), /*#__PURE__*/React.createElement("div", {
+    style: {
+      display: "grid",
+      gridTemplateColumns: "1fr 1fr 1fr 1fr 1fr auto",
+      gap: 10,
+      marginBottom: 16,
+      alignItems: "flex-end"
+    }
+  }, /*#__PURE__*/React.createElement("div", null, /*#__PURE__*/React.createElement("div", {
+    style: {
+      fontSize: 9,
+      color: C.dim,
+      letterSpacing: 2,
+      marginBottom: 6
+    }
+  }, "SIMBOL"), /*#__PURE__*/React.createElement(Input, {
+    value: manualDraft.symbol,
+    onChange: v => setManualDraft(d => ({
+      ...d,
+      symbol: v.toUpperCase()
+    })),
+    placeholder: "US30"
+  })), /*#__PURE__*/React.createElement("div", null, /*#__PURE__*/React.createElement("div", {
+    style: {
+      fontSize: 9,
+      color: C.dim,
+      letterSpacing: 2,
+      marginBottom: 6
+    }
+  }, "DIREC\u021AIE"), /*#__PURE__*/React.createElement("div", {
+    style: {
+      display: "flex",
+      gap: 6
+    }
+  }, ["BUY", "SELL"].map(s => /*#__PURE__*/React.createElement("button", {
+    key: s,
+    onClick: () => setManualDraft(d => ({
+      ...d,
+      side: s
+    })),
+    style: {
+      fontFamily: font,
+      fontSize: 11,
+      fontWeight: 700,
+      flex: 1,
+      padding: "10px 4px",
+      border: `1px solid ${manualDraft.side === s ? s === "BUY" ? C.green : C.red : C.border}`,
+      background: manualDraft.side === s ? s === "BUY" ? C.green + "15" : C.red + "15" : "transparent",
+      color: manualDraft.side === s ? s === "BUY" ? C.green : C.red : C.dim,
+      cursor: "pointer",
+      borderRadius: 2
+    }
+  }, s)))), /*#__PURE__*/React.createElement("div", null, /*#__PURE__*/React.createElement("div", {
+    style: {
+      fontSize: 9,
+      color: C.dim,
+      letterSpacing: 2,
+      marginBottom: 6
+    }
+  }, "PRE\u021A INTRARE"), /*#__PURE__*/React.createElement(Input, {
+    value: manualDraft.entryPrice,
+    onChange: v => setManualDraft(d => ({
+      ...d,
+      entryPrice: v
+    })),
+    placeholder: "48340",
+    type: "number"
+  })), /*#__PURE__*/React.createElement("div", null, /*#__PURE__*/React.createElement("div", {
+    style: {
+      fontSize: 9,
+      color: C.dim,
+      letterSpacing: 2,
+      marginBottom: 6
+    }
+  }, "PRE\u021A IE\u0218IRE"), /*#__PURE__*/React.createElement(Input, {
+    value: manualDraft.exitPrice,
+    onChange: v => setManualDraft(d => ({
+      ...d,
+      exitPrice: v
+    })),
+    placeholder: "48420",
+    type: "number"
+  })), /*#__PURE__*/React.createElement("div", null, /*#__PURE__*/React.createElement("div", {
+    style: {
+      fontSize: 9,
+      color: C.dim,
+      letterSpacing: 2,
+      marginBottom: 6
+    }
+  }, "CANTITATE"), /*#__PURE__*/React.createElement(Input, {
+    value: manualDraft.qty,
+    onChange: v => setManualDraft(d => ({
+      ...d,
+      qty: v
+    })),
+    placeholder: "0.1",
+    type: "number"
+  })), /*#__PURE__*/React.createElement("div", null, /*#__PURE__*/React.createElement(Btn, {
+    variant: "primary",
+    small: true,
+    onClick: addManualTrade
+  }, "+ ADAUG\u0102"))), manualDraft.entryPrice && manualDraft.exitPrice && (() => {
+    const ep = parseFloat(manualDraft.entryPrice),
+      xp = parseFloat(manualDraft.exitPrice),
+      qty = parseFloat(manualDraft.qty) || 0.1;
+    const pnl = manualDraft.side === "BUY" ? (xp - ep) * qty : (ep - xp) * qty;
+    const pts = manualDraft.side === "BUY" ? xp - ep : ep - xp;
+    return /*#__PURE__*/React.createElement("div", {
+      style: {
+        fontSize: 11,
+        color: pnl >= 0 ? C.green : C.red,
+        marginBottom: 14
+      }
+    }, "Preview: ", pts >= 0 ? "+" : "", pts.toFixed(1), " pct \xB7 ", pnl >= 0 ? "+" : "", pnl.toFixed(2), " P&L");
+  })(), manualTrades.length > 0 && /*#__PURE__*/React.createElement("div", {
+    style: {
+      marginBottom: 16
+    }
+  }, /*#__PURE__*/React.createElement("div", {
+    style: {
+      fontSize: 9,
+      color: C.dim,
+      letterSpacing: 2,
+      marginBottom: 10
+    }
+  }, "TRADURI AD\u0102UGATE (", manualTrades.length, ")"), manualTrades.map((t, i) => /*#__PURE__*/React.createElement("div", {
+    key: i,
+    style: {
+      display: "flex",
+      justifyContent: "space-between",
+      alignItems: "center",
+      padding: "8px 12px",
+      background: C.surface2,
+      borderLeft: `3px solid ${t.win ? C.green : C.red}`,
+      marginBottom: 4
+    }
+  }, /*#__PURE__*/React.createElement("div", {
+    style: {
+      display: "flex",
+      gap: 10,
+      alignItems: "center",
+      fontSize: 11
+    }
+  }, /*#__PURE__*/React.createElement("span", {
+    style: {
+      color: C.gold,
+      fontWeight: 700,
+      minWidth: 50
+    }
+  }, t.symbol), /*#__PURE__*/React.createElement(Badge, {
+    label: t.side,
+    color: t.side === "BUY" ? C.green : C.red
+  }), /*#__PURE__*/React.createElement("span", {
+    style: {
+      color: C.dim
+    }
+  }, t.entryPrice, " \u2192 ", t.exitPrice, " \xD7 ", t.qty)), /*#__PURE__*/React.createElement("div", {
+    style: {
+      display: "flex",
+      gap: 12,
+      alignItems: "center"
+    }
+  }, /*#__PURE__*/React.createElement("span", {
+    style: {
+      fontSize: 11,
+      color: t.points >= 0 ? C.green + "90" : C.red + "90"
+    }
+  }, t.points >= 0 ? "+" : "", t.points.toFixed(1), " pct"), /*#__PURE__*/React.createElement("span", {
+    style: {
+      fontSize: 12,
+      fontWeight: 700,
+      color: t.win ? C.green : C.red
+    }
+  }, t.pnl >= 0 ? "+" : "", t.pnl.toFixed(2)), /*#__PURE__*/React.createElement("button", {
+    onClick: () => removeManualTrade(i),
+    style: {
+      background: "none",
+      border: "none",
+      color: C.red,
+      cursor: "pointer",
+      fontSize: 16,
+      padding: "0 4px"
+    }
+  }, "\xD7")))), /*#__PURE__*/React.createElement("div", {
+    style: {
+      marginTop: 14,
+      padding: "10px 14px",
+      background: C.surface2,
+      border: `1px solid ${C.border}`,
+      fontSize: 11,
+      display: "flex",
+      gap: 24
+    }
+  }, /*#__PURE__*/React.createElement("span", {
+    style: {
+      color: C.dim
+    }
+  }, "Total: ", manualTrades.length, " traduri"), /*#__PURE__*/React.createElement("span", {
+    style: {
+      color: manualTrades.filter(t => t.win).length / manualTrades.length >= 0.5 ? C.green : C.red
+    }
+  }, "WR: ", (manualTrades.filter(t => t.win).length / manualTrades.length * 100).toFixed(0), "%"), /*#__PURE__*/React.createElement("span", {
+    style: {
+      color: manualTrades.reduce((s, t) => s + t.pnl, 0) >= 0 ? C.green : C.red
+    }
+  }, "P&L: ", manualTrades.reduce((s, t) => s + t.pnl, 0) >= 0 ? "+" : "", manualTrades.reduce((s, t) => s + t.pnl, 0).toFixed(2)))), err && /*#__PURE__*/React.createElement("div", {
+    style: {
+      color: C.red,
+      fontSize: 11,
+      marginBottom: 12,
+      padding: "8px 12px",
+      background: C.red + "10",
+      border: `1px solid ${C.red}30`
+    }
+  }, err), /*#__PURE__*/React.createElement(Btn, {
+    onClick: submitManualTrades,
+    disabled: !manualTrades.length
+  }, "CONTINU\u0102 CU ", manualTrades.length, " TRADURI \u2192")), history.length > 0 && /*#__PURE__*/React.createElement("div", null, /*#__PURE__*/React.createElement(SectionTitle, null, "Sesiuni recente"), /*#__PURE__*/React.createElement("div", {
+    style: {
+      display: "grid",
+      gridTemplateColumns: "repeat(auto-fill, minmax(165px,1fr))",
+      gap: 10
+    }
+  }, history.slice(-6).reverse().map((h, i) => {
+    var _h$stats$accountPct, _h$analysis;
+    return /*#__PURE__*/React.createElement("div", {
+      key: i,
+      style: {
+        background: C.surface,
+        border: `1px solid ${C.border}`,
+        padding: "14px",
+        borderRadius: 2
+      }
+    }, /*#__PURE__*/React.createElement("div", {
+      style: {
+        fontSize: 10,
+        color: C.dim,
+        marginBottom: 8
+      }
+    }, h.date), /*#__PURE__*/React.createElement("div", {
+      style: {
+        fontSize: 16,
+        fontWeight: 700,
+        color: h.stats.totalPnl >= 0 ? C.green : C.red
+      }
+    }, h.stats.totalPnl >= 0 ? "+" : "", h.stats.totalPnl.toFixed(2)), /*#__PURE__*/React.createElement("div", {
+      style: {
+        fontSize: 11,
+        color: (h.stats.totalPoints || 0) >= 0 ? C.green + "90" : C.red + "90",
+        marginTop: 2
+      }
+    }, (h.stats.totalPoints || 0) >= 0 ? "+" : "", (h.stats.totalPoints || 0).toFixed(1), " pct"), h.accountSize > 0 && h.stats.accountAfter && /*#__PURE__*/React.createElement("div", {
+      style: {
+        fontSize: 10,
+        color: C.dim,
+        marginTop: 4
+      }
+    }, "Cont: ", h.stats.accountAfter.toFixed(0), " (", h.stats.accountPct >= 0 ? "+" : "", (_h$stats$accountPct = h.stats.accountPct) === null || _h$stats$accountPct === void 0 ? void 0 : _h$stats$accountPct.toFixed(1), "%)"), /*#__PURE__*/React.createElement("div", {
+      style: {
+        fontSize: 10,
+        color: C.dim,
+        marginTop: 4
+      }
+    }, "WR ", h.stats.winRate.toFixed(0), "% \xB7 RR ", h.stats.rr.toFixed(1)), ((_h$analysis = h.analysis) === null || _h$analysis === void 0 ? void 0 : _h$analysis.verdict) && /*#__PURE__*/React.createElement("div", {
+      style: {
+        marginTop: 8
+      }
+    }, /*#__PURE__*/React.createElement(Badge, {
+      label: h.analysis.verdict,
+      color: h.analysis.verdict === "BUNĂ" ? C.green : h.analysis.verdict === "SLABĂ" ? C.red : C.gold
+    })), h.mentorFeedback && /*#__PURE__*/React.createElement("div", {
+      style: {
+        marginTop: 8,
+        fontSize: 10,
+        color: C.mentorAccent
+      }
+    }, "\uD83D\uDCAC Feedback mentor"));
+  })))), step === "home" && mainTab === "history" && /*#__PURE__*/React.createElement(StudentHistoryTab, {
+    history: history,
+    onViewSession: () => {}
+  }), step === "preview" && stats && /*#__PURE__*/React.createElement("div", null, /*#__PURE__*/React.createElement("div", {
+    style: {
+      display: "flex",
+      justifyContent: "space-between",
+      alignItems: "flex-start",
+      marginBottom: 28
+    }
+  }, /*#__PURE__*/React.createElement("div", null, /*#__PURE__*/React.createElement("div", {
+    style: {
+      fontSize: 18,
+      fontWeight: 700,
+      color: C.text
+    }
+  }, "Preview sesiune"), /*#__PURE__*/React.createElement("div", {
+    style: {
+      fontSize: 11,
+      color: C.dim,
+      marginTop: 4
+    }
+  }, csvName)), /*#__PURE__*/React.createElement(Badge, {
+    label: `${trades.length} TRADURI`
+  })), /*#__PURE__*/React.createElement("div", {
+    style: {
+      marginBottom: 20,
+      display: "flex",
+      gap: 12,
+      alignItems: "flex-end"
+    }
+  }, /*#__PURE__*/React.createElement("div", {
+    style: {
+      width: 220
+    }
+  }, /*#__PURE__*/React.createElement("div", {
+    style: {
+      fontSize: 9,
+      color: C.dim,
+      letterSpacing: 2,
+      marginBottom: 8
+    }
+  }, "CONT \xCENAINTE DE SESIUNE"), /*#__PURE__*/React.createElement(Input, {
+    value: accountSize,
+    onChange: setAccountSize,
+    placeholder: "ex: 10000",
+    type: "number"
+  })), stats.accountAfter !== null && /*#__PURE__*/React.createElement("div", {
+    style: {
+      paddingBottom: 12,
+      fontSize: 12
+    }
+  }, /*#__PURE__*/React.createElement("span", {
+    style: {
+      color: C.dim
+    }
+  }, "\u2192 "), /*#__PURE__*/React.createElement("span", {
+    style: {
+      color: stats.totalPnl >= 0 ? C.green : C.red,
+      fontWeight: 700
+    }
+  }, (_stats$accountAfter2 = stats.accountAfter) === null || _stats$accountAfter2 === void 0 ? void 0 : _stats$accountAfter2.toFixed(2), " (", stats.accountPct >= 0 ? "+" : "", (_stats$accountPct2 = stats.accountPct) === null || _stats$accountPct2 === void 0 ? void 0 : _stats$accountPct2.toFixed(2), "%)"))), /*#__PURE__*/React.createElement("div", {
+    style: {
+      display: "grid",
+      gridTemplateColumns: "repeat(3,1fr)",
+      gap: 10,
+      marginBottom: 6
+    }
+  }, /*#__PURE__*/React.createElement(StatTile, {
+    label: "Win Rate",
+    value: `${stats.winRate.toFixed(1)}%`,
+    color: stats.winRate >= 50 ? C.green : C.red,
+    sub: `${stats.wins}W / ${stats.losses}L`
+  }), /*#__PURE__*/React.createElement(StatTile, {
+    label: "Puncte totale",
+    value: `${stats.totalPoints >= 0 ? "+" : ""}${stats.totalPoints.toFixed(1)}`,
+    color: stats.totalPoints >= 0 ? C.green : C.red,
+    sub: `+${stats.avgWinPts.toFixed(1)} / -${stats.avgLossPts.toFixed(1)} avg`
+  }), /*#__PURE__*/React.createElement(StatTile, {
+    label: "RR (puncte)",
+    value: stats.rrPts.toFixed(2),
+    color: stats.rrPts >= 1.5 ? C.green : stats.rrPts >= 1 ? C.gold : C.red,
+    sub: `RR P&L: ${stats.rr.toFixed(2)}`
+  })), /*#__PURE__*/React.createElement("div", {
+    style: {
+      display: "grid",
+      gridTemplateColumns: "repeat(3,1fr)",
+      gap: 10,
+      marginBottom: 24
+    }
+  }, /*#__PURE__*/React.createElement(StatTile, {
+    label: "P&L total",
+    value: `${stats.totalPnl >= 0 ? "+" : ""}${stats.totalPnl.toFixed(2)}`,
+    color: stats.totalPnl >= 0 ? C.green : C.red
+  }), /*#__PURE__*/React.createElement(StatTile, {
+    label: "Max win",
+    value: `+${stats.maxWin.toFixed(2)}`,
+    color: C.green,
+    sub: `+${stats.maxWinPts.toFixed(1)} pct`
+  }), /*#__PURE__*/React.createElement(StatTile, {
+    label: "Max loss",
+    value: stats.maxLoss.toFixed(2),
+    color: C.red,
+    sub: `${stats.maxLossPts.toFixed(1)} pct`
+  })), /*#__PURE__*/React.createElement("div", {
+    style: {
+      marginBottom: 20
+    }
+  }, /*#__PURE__*/React.createElement(SectionTitle, null, "Traduri detectate"), trades.map((t, i) => /*#__PURE__*/React.createElement("div", {
+    key: i,
+    style: {
+      display: "flex",
+      justifyContent: "space-between",
+      alignItems: "center",
+      padding: "9px 14px",
+      background: C.surface,
+      borderLeft: `3px solid ${t.win ? C.green : C.red}`,
+      marginBottom: 4,
+      fontSize: 11
+    }
+  }, /*#__PURE__*/React.createElement("div", {
+    style: {
+      display: "flex",
+      gap: 12,
+      alignItems: "center"
+    }
+  }, /*#__PURE__*/React.createElement("span", {
+    style: {
+      color: C.gold,
+      fontWeight: 700,
+      minWidth: 70
+    }
+  }, t.symbol), /*#__PURE__*/React.createElement(Badge, {
+    label: t.side,
+    color: t.side === "BUY" ? C.green : C.red
+  })), /*#__PURE__*/React.createElement("div", {
+    style: {
+      display: "flex",
+      gap: 16,
+      color: C.dim
+    }
+  }, /*#__PURE__*/React.createElement("span", null, t.entryPrice, " \u2192 ", t.exitPrice), /*#__PURE__*/React.createElement("span", {
+    style: {
+      color: t.points >= 0 ? C.green + "90" : C.red + "90",
+      minWidth: 70,
+      textAlign: "right"
+    }
+  }, t.points >= 0 ? "+" : "", t.points.toFixed(1), " pct"), /*#__PURE__*/React.createElement("span", {
+    style: {
+      color: t.win ? C.green : C.red,
+      fontWeight: 700,
+      minWidth: 60,
+      textAlign: "right"
+    }
+  }, t.pnl >= 0 ? "+" : "", t.pnl.toFixed(2)))))), /*#__PURE__*/React.createElement("div", {
+    style: {
+      marginBottom: 20
+    }
+  }, /*#__PURE__*/React.createElement(SectionTitle, null, "Note (op\u021Bional)"), /*#__PURE__*/React.createElement(Textarea, {
+    value: notes,
+    onChange: setNotes,
+    placeholder: "Cum te-ai sim\u021Bit? Ai urm\u0103rit planul?",
+    rows: 3
+  })), err && /*#__PURE__*/React.createElement("div", {
+    style: {
+      color: C.red,
+      fontSize: 11,
+      marginBottom: 14,
+      padding: "10px 14px",
+      background: C.red + "10",
+      border: `1px solid ${C.red}30`
+    }
+  }, err), /*#__PURE__*/React.createElement("div", {
+    style: {
+      display: "flex",
+      gap: 12,
+      alignItems: "center",
+      flexWrap: "wrap"
+    }
+  }, /*#__PURE__*/React.createElement(Btn, {
+    onClick: handleAnalyze
+  }, "ANALIZEAZ\u0102 CU AI \u2192"), /*#__PURE__*/React.createElement(Btn, {
+    variant: "ghost",
+    onClick: handleSaveWithoutAI
+  }, "SALVEAZ\u0102 F\u0102R\u0102 AI"), /*#__PURE__*/React.createElement("span", {
+    style: {
+      fontSize: 10,
+      color: C.dim
+    }
+  }, "Analiza AI cost\u0103 ~$0.003/sesiune"))), step === "analyzing" && /*#__PURE__*/React.createElement(Spinner, {
+    label: "AI COACH ANALIZEAZ\u0102 SESIUNEA..."
+  }), step === "report" && analysis && stats && /*#__PURE__*/React.createElement("div", null, /*#__PURE__*/React.createElement("div", {
+    style: {
+      display: "flex",
+      justifyContent: "space-between",
+      alignItems: "flex-start",
+      marginBottom: 28
+    }
+  }, /*#__PURE__*/React.createElement("div", null, /*#__PURE__*/React.createElement("div", {
+    style: {
+      fontSize: 10,
+      color: C.dim,
+      letterSpacing: 2,
+      marginBottom: 8
+    }
+  }, "RAPORT \xB7 ", new Date().toLocaleDateString("ro-RO", {
+    weekday: "long",
+    day: "numeric",
+    month: "long"
+  }).toUpperCase()), /*#__PURE__*/React.createElement("div", {
+    style: {
+      fontSize: 22,
+      fontWeight: 700,
+      color: C.text
+    }
+  }, "Sesiune ", /*#__PURE__*/React.createElement("span", {
+    style: {
+      color: vC
+    }
+  }, analysis.verdict))), /*#__PURE__*/React.createElement("div", {
+    style: {
+      textAlign: "right"
+    }
+  }, /*#__PURE__*/React.createElement("div", {
+    style: {
+      fontSize: 40,
+      fontWeight: 700,
+      color: vC
+    }
+  }, analysis.scor), /*#__PURE__*/React.createElement("div", {
+    style: {
+      fontSize: 9,
+      color: C.dim,
+      letterSpacing: 2
+    }
+  }, "SCOR/100"))), /*#__PURE__*/React.createElement("div", {
+    style: {
+      display: "grid",
+      gridTemplateColumns: "repeat(3,1fr)",
+      gap: 10,
+      marginBottom: 10
+    }
+  }, /*#__PURE__*/React.createElement(StatTile, {
+    label: "Win Rate",
+    value: `${stats.winRate.toFixed(1)}%`,
+    color: stats.winRate >= 50 ? C.green : C.red,
+    sub: `${stats.wins}W / ${stats.losses}L`
+  }), /*#__PURE__*/React.createElement(StatTile, {
+    label: "Puncte totale",
+    value: `${stats.totalPoints >= 0 ? "+" : ""}${stats.totalPoints.toFixed(1)}`,
+    color: stats.totalPoints >= 0 ? C.green : C.red,
+    sub: `avg +${stats.avgWinPts.toFixed(1)} / -${stats.avgLossPts.toFixed(1)}`
+  }), /*#__PURE__*/React.createElement(StatTile, {
+    label: "RR puncte",
+    value: stats.rrPts.toFixed(2),
+    color: stats.rrPts >= 1.5 ? C.green : stats.rrPts >= 1 ? C.gold : C.red,
+    sub: `RR P&L: ${stats.rr.toFixed(2)}`
+  })), /*#__PURE__*/React.createElement("div", {
+    style: {
+      display: "grid",
+      gridTemplateColumns: "repeat(3,1fr)",
+      gap: 10,
+      marginBottom: stats.accountAfter ? 10 : 28
+    }
+  }, /*#__PURE__*/React.createElement(StatTile, {
+    label: "P&L total",
+    value: `${stats.totalPnl >= 0 ? "+" : ""}${stats.totalPnl.toFixed(2)}`,
+    color: stats.totalPnl >= 0 ? C.green : C.red
+  }), /*#__PURE__*/React.createElement(StatTile, {
+    label: "Max win",
+    value: `+${stats.maxWin.toFixed(2)}`,
+    color: C.green,
+    sub: `+${stats.maxWinPts.toFixed(1)} pct`
+  }), /*#__PURE__*/React.createElement(StatTile, {
+    label: "Max loss",
+    value: stats.maxLoss.toFixed(2),
+    color: C.red,
+    sub: `${stats.maxLossPts.toFixed(1)} pct`
+  })), stats.accountAfter !== null && /*#__PURE__*/React.createElement("div", {
+    style: {
+      display: "grid",
+      gridTemplateColumns: "repeat(3,1fr)",
+      gap: 10,
+      marginBottom: 28
+    }
+  }, /*#__PURE__*/React.createElement(StatTile, {
+    label: "Cont \xEEnainte",
+    value: (parseFloat(accountSize) || savedAccount).toLocaleString(),
+    color: C.dim
+  }), /*#__PURE__*/React.createElement(StatTile, {
+    label: "Cont dup\u0103",
+    value: stats.accountAfter.toFixed(2),
+    color: stats.accountAfter >= (parseFloat(accountSize) || savedAccount) ? C.green : C.red
+  }), /*#__PURE__*/React.createElement(StatTile, {
+    label: "Varia\u021Bie %",
+    value: `${stats.accountPct >= 0 ? "+" : ""}${(_stats$accountPct3 = stats.accountPct) === null || _stats$accountPct3 === void 0 ? void 0 : _stats$accountPct3.toFixed(2)}%`,
+    color: stats.accountPct >= 0 ? C.green : C.red
+  })), analysis.respectat_obiectivele !== "N/A" && /*#__PURE__*/React.createElement("div", {
+    style: {
+      marginBottom: 24,
+      padding: "14px 20px",
+      background: C.mentorAccent + "08",
+      border: `1px solid ${C.mentorAccent}25`,
+      borderLeft: `4px solid ${C.mentorAccent}`,
+      borderRadius: 2
+    }
+  }, /*#__PURE__*/React.createElement("div", {
+    style: {
+      display: "flex",
+      justifyContent: "space-between"
+    }
+  }, /*#__PURE__*/React.createElement("div", {
+    style: {
+      fontSize: 9,
+      color: C.mentorAccent,
+      letterSpacing: 2,
+      marginBottom: 6
+    }
+  }, "OBIECTIVE MENTOR"), /*#__PURE__*/React.createElement(Badge, {
+    label: analysis.respectat_obiectivele,
+    color: analysis.respectat_obiectivele === "DA" ? C.green : analysis.respectat_obiectivele === "NU" ? C.red : C.orange
+  })), /*#__PURE__*/React.createElement("div", {
+    style: {
+      fontSize: 12,
+      color: "#c7d2fe",
+      lineHeight: 1.6
+    }
+  }, analysis.obs_obiective)), /*#__PURE__*/React.createElement("div", {
+    style: {
+      marginBottom: 24
+    }
+  }, /*#__PURE__*/React.createElement(SectionTitle, null, "Rezumat AI Coach"), /*#__PURE__*/React.createElement("div", {
+    style: {
+      background: C.surface,
+      border: `1px solid ${C.border}`,
+      padding: "18px 20px",
+      fontSize: 13,
+      color: C.text,
+      lineHeight: 1.8
+    }
+  }, analysis.rezumat)), /*#__PURE__*/React.createElement("div", {
+    style: {
+      display: "grid",
+      gridTemplateColumns: "1fr 1fr 1fr",
+      gap: 16,
+      marginBottom: 24
+    }
+  }, /*#__PURE__*/React.createElement("div", null, /*#__PURE__*/React.createElement(SectionTitle, null, "\u2713 Puncte forte"), (analysis.puncte_forte || []).map((p, i) => /*#__PURE__*/React.createElement("div", {
+    key: i,
+    style: {
+      padding: "10px 14px",
+      background: C.surface,
+      borderLeft: `3px solid ${C.green}`,
+      marginBottom: 6,
+      fontSize: 12,
+      color: C.text,
+      lineHeight: 1.5
+    }
+  }, p))), /*#__PURE__*/React.createElement("div", null, /*#__PURE__*/React.createElement(SectionTitle, null, "\u2717 Erori"), (analysis.erori_identificate || []).map((e, i) => /*#__PURE__*/React.createElement("div", {
+    key: i,
+    style: {
+      padding: "10px 14px",
+      background: C.surface,
+      borderLeft: `3px solid ${C.red}`,
+      marginBottom: 6,
+      fontSize: 12,
+      color: C.text,
+      lineHeight: 1.5
+    }
+  }, e))), /*#__PURE__*/React.createElement("div", null, /*#__PURE__*/React.createElement(SectionTitle, null, "\u2195 Fa\u021B\u0103 de istoric"), /*#__PURE__*/React.createElement("div", {
+    style: {
+      padding: "10px 14px",
+      background: C.surface,
+      borderLeft: `3px solid ${C.gold}`,
+      marginBottom: 6,
+      fontSize: 12,
+      color: C.text,
+      lineHeight: 1.5
+    }
+  }, analysis.comparatie_cu_istoric), analysis.pattern_periculos && /*#__PURE__*/React.createElement("div", {
+    style: {
+      padding: "10px 14px",
+      background: C.orange + "08",
+      borderLeft: `3px solid ${C.orange}`,
+      fontSize: 12,
+      color: C.text,
+      lineHeight: 1.5
+    }
+  }, "\u26A0 ", analysis.pattern_periculos))), /*#__PURE__*/React.createElement("div", {
+    style: {
+      marginBottom: 24,
+      padding: "20px 24px",
+      background: C.gold + "08",
+      border: `1px solid ${C.gold}25`,
+      borderLeft: `4px solid ${C.gold}`
+    }
+  }, /*#__PURE__*/React.createElement("div", {
+    style: {
+      fontSize: 9,
+      color: C.gold + "80",
+      letterSpacing: 2,
+      marginBottom: 8
+    }
+  }, "FOCUS PRINCIPAL M\xC2INE"), /*#__PURE__*/React.createElement("div", {
+    style: {
+      fontSize: 14,
+      color: C.gold,
+      lineHeight: 1.6
+    }
+  }, analysis.focus_principal)), /*#__PURE__*/React.createElement("div", {
+    style: {
+      marginBottom: 28
+    }
+  }, /*#__PURE__*/React.createElement(SectionTitle, null, "Sugestii pentru m\xE2ine"), (analysis.sugestii_maine || []).map((s, i) => /*#__PURE__*/React.createElement("div", {
+    key: i,
+    style: {
+      display: "flex",
+      gap: 16,
+      padding: "12px 16px",
+      background: C.surface,
+      border: `1px solid ${C.border}`,
+      marginBottom: 8
+    }
+  }, /*#__PURE__*/React.createElement("span", {
+    style: {
+      color: C.gold,
+      fontWeight: 700
+    }
+  }, i + 1, "."), /*#__PURE__*/React.createElement("span", {
+    style: {
+      fontSize: 12,
+      color: C.dim,
+      lineHeight: 1.6
+    }
+  }, s)))), /*#__PURE__*/React.createElement(Btn, {
+    onClick: reset
+  }, "SESIUNE NOU\u0102 \u2192"))));
+}
+
+// ─── Small helper components (evită IIFEs cu return în JSX) ──────────────────
+function DashboardStats({
+  students,
+  studentData,
+  course
+}) {
+  const allSessions = students.flatMap(n => {
+    var _studentData$n;
+    return ((_studentData$n = studentData[n]) === null || _studentData$n === void 0 ? void 0 : _studentData$n.sessions) || [];
+  });
+  const globalWr = allSessions.length ? `${(allSessions.reduce((a, s) => a + s.stats.winRate, 0) / allSessions.length).toFixed(1)}%` : "—";
+  const activeCount = students.filter(n => {
+    var _studentData$n2;
+    return (((_studentData$n2 = studentData[n]) === null || _studentData$n2 === void 0 ? void 0 : _studentData$n2.sessions) || []).length > 0;
+  }).length;
+  const totalSessions = students.reduce((s, n) => {
+    var _studentData$n3;
+    return s + (((_studentData$n3 = studentData[n]) === null || _studentData$n3 === void 0 ? void 0 : _studentData$n3.sessions) || []).length;
+  }, 0);
+  return /*#__PURE__*/React.createElement("div", {
+    style: {
+      display: "grid",
+      gridTemplateColumns: "repeat(4,1fr)",
+      gap: 12,
+      marginBottom: 32
+    }
+  }, /*#__PURE__*/React.createElement(StatTile, {
+    label: "Elevi activi",
+    value: activeCount,
+    color: C.mentorAccent,
+    sub: `din ${students.length} total`
+  }), /*#__PURE__*/React.createElement(StatTile, {
+    label: "Sesiuni totale",
+    value: totalSessions,
+    color: C.gold
+  }), /*#__PURE__*/React.createElement(StatTile, {
+    label: "WR mediu global",
+    value: globalWr,
+    color: C.blue
+  }), /*#__PURE__*/React.createElement(StatTile, {
+    label: "Lec\u021Bii curs",
+    value: course.length,
+    color: C.mentorAccent
+  }));
+}
+function StudentTrend({
+  summary,
+  tc
+}) {
+  if (!summary) return null;
+  return /*#__PURE__*/React.createElement("span", {
+    style: {
+      fontSize: 20,
+      color: tc(summary.trend)
+    }
+  }, summary.trend);
+}
+function NextBackupLabel({
+  time
+}) {
+  if (!time) return null;
+  const now = new Date();
+  const [hh, mm] = time.split(":").map(Number);
+  const next = new Date(now);
+  next.setHours(hh, mm, 0, 0);
+  if (next <= now) next.setDate(next.getDate() + 1);
+  const diff = next - now;
+  const h = Math.floor(diff / 3600000);
+  const m = Math.floor(diff % 3600000 / 60000);
+  return /*#__PURE__*/React.createElement("span", null, "Următor: " + (h > 0 ? h + "h " + m + "min" : m + " minute"));
+}
+
+// ─── Password Manager (mentor settings) ──────────────────────────────────────
+function PasswordManager() {
+  const [editing, setEditing] = useState(false);
+  const [oldPass, setOldPass] = useState("");
+  const [newPass, setNewPass] = useState("");
+  const [confirm, setConfirm] = useState("");
+  const [err, setErr] = useState("");
+  const [ok, setOk] = useState(false);
+  const save = () => {
+    if (oldPass !== getMentorPass()) {
+      setErr("Parola curentă este greșită.");
+      return;
+    }
+    if (newPass.length < 4) {
+      setErr("Parola nouă trebuie să aibă minim 4 caractere.");
+      return;
+    }
+    if (newPass !== confirm) {
+      setErr("Parolele nu coincid.");
+      return;
+    }
+    sSet("mentor_pass", newPass);
+    setEditing(false);
+    setOldPass("");
+    setNewPass("");
+    setConfirm("");
+    setErr("");
+    setOk(true);
+    setTimeout(() => setOk(false), 3000);
+  };
+  return /*#__PURE__*/React.createElement("div", {
+    style: {
+      background: C.surface,
+      border: `1px solid ${C.mentorAccent}30`,
+      borderTop: `2px solid ${C.mentorAccent}`,
+      padding: "24px",
+      marginBottom: 24
+    }
+  }, /*#__PURE__*/React.createElement("div", {
+    style: {
+      fontSize: 13,
+      fontWeight: 700,
+      color: C.mentorAccent,
+      marginBottom: 4
+    }
+  }, "Parol\u0103 Mentor"), /*#__PURE__*/React.createElement("div", {
+    style: {
+      fontSize: 11,
+      color: C.dim,
+      lineHeight: 1.7,
+      marginBottom: 16
+    }
+  }, "Schimb\u0103 parola de acces mentor. Parola implicit\u0103 este ", /*#__PURE__*/React.createElement("span", {
+    style: {
+      color: C.gold
+    }
+  }, "mentor2025"), "."), !editing ? /*#__PURE__*/React.createElement("div", {
+    style: {
+      display: "flex",
+      alignItems: "center",
+      gap: 16
+    }
+  }, /*#__PURE__*/React.createElement(Btn, {
+    variant: "mentor",
+    small: true,
+    onClick: () => {
+      setEditing(true);
+      setErr("");
+    }
+  }, "SCHIMB\u0102 PAROLA"), ok && /*#__PURE__*/React.createElement("span", {
+    style: {
+      fontSize: 11,
+      color: C.green
+    }
+  }, "\u2713 Parol\u0103 salvat\u0103")) : /*#__PURE__*/React.createElement("div", null, /*#__PURE__*/React.createElement("div", {
+    style: {
+      marginBottom: 10
+    }
+  }, /*#__PURE__*/React.createElement("div", {
+    style: {
+      fontSize: 9,
+      color: C.dim,
+      letterSpacing: 2,
+      marginBottom: 6
+    }
+  }, "PAROLA CURENT\u0102"), /*#__PURE__*/React.createElement(Input, {
+    value: oldPass,
+    onChange: setOldPass,
+    placeholder: "Parola actual\u0103",
+    type: "password"
+  })), /*#__PURE__*/React.createElement("div", {
+    style: {
+      marginBottom: 10
+    }
+  }, /*#__PURE__*/React.createElement("div", {
+    style: {
+      fontSize: 9,
+      color: C.dim,
+      letterSpacing: 2,
+      marginBottom: 6
+    }
+  }, "PAROLA NOU\u0102"), /*#__PURE__*/React.createElement(Input, {
+    value: newPass,
+    onChange: setNewPass,
+    placeholder: "Minim 4 caractere",
+    type: "password"
+  })), /*#__PURE__*/React.createElement("div", {
+    style: {
+      marginBottom: 14
+    }
+  }, /*#__PURE__*/React.createElement("div", {
+    style: {
+      fontSize: 9,
+      color: C.dim,
+      letterSpacing: 2,
+      marginBottom: 6
+    }
+  }, "CONFIRM\u0102 PAROLA NOU\u0102"), /*#__PURE__*/React.createElement(Input, {
+    value: confirm,
+    onChange: setConfirm,
+    placeholder: "Repet\u0103 parola nou\u0103",
+    type: "password"
+  })), err && /*#__PURE__*/React.createElement("div", {
+    style: {
+      color: C.red,
+      fontSize: 11,
+      marginBottom: 12,
+      padding: "8px 12px",
+      background: C.red + "10",
+      border: `1px solid ${C.red}30`
+    }
+  }, err), /*#__PURE__*/React.createElement("div", {
+    style: {
+      display: "flex",
+      gap: 10
+    }
+  }, /*#__PURE__*/React.createElement(Btn, {
+    variant: "mentor",
+    small: true,
+    onClick: save
+  }, "SALVEAZ\u0102 PAROLA"), /*#__PURE__*/React.createElement(Btn, {
+    variant: "ghost",
+    small: true,
+    onClick: () => {
+      setEditing(false);
+      setErr("");
+    }
+  }, "ANULEAZ\u0102"))));
+}
+
+// ─── API Key Manager (mentor-only, inside Settings tab) ───────────────────────
+function ApiKeyManager() {
+  const [current, setCurrent] = useState(() => loadApiKey());
+  const [editing, setEditing] = useState(false);
+  const [draft, setDraft] = useState("");
+  const [testing, setTesting] = useState(false);
+  const [err, setErr] = useState("");
+  const [ok, setOk] = useState(false);
+  const testAndSave = async () => {
+    if (!draft.trim()) {
+      setErr("Introdu cheia.");
+      return;
+    }
+    setTesting(true);
+    setErr("");
+    setOk(false);
+    try {
+      const res = await fetch("https://api.anthropic.com/v1/messages", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "x-api-key": draft.trim(),
+          "anthropic-version": "2023-06-01",
+          "anthropic-dangerous-direct-browser-access": "true"
+        },
+        body: JSON.stringify({
+          model: "claude-haiku-4-5-20251001",
+          max_tokens: 5,
+          messages: [{
+            role: "user",
+            content: "ping"
+          }]
+        })
+      });
+      if (res.status === 401) {
+        setErr("Cheie invalidă — verifică din console.anthropic.com.");
+        setTesting(false);
+        return;
+      }
+      saveApiKey(draft.trim());
+      setCurrent(draft.trim());
+      setDraft("");
+      setEditing(false);
+      setOk(true);
+      setTimeout(() => setOk(false), 3000);
+    } catch (e) {
+      setErr("Eroare conexiune: " + e.message);
+    }
+    setTesting(false);
+  };
+  const masked = current ? current.slice(0, 10) + "••••••••••••••••••••" : null;
+  return /*#__PURE__*/React.createElement("div", {
+    style: {
+      background: C.surface,
+      border: `1px solid ${C.mentorAccent}30`,
+      borderTop: `2px solid ${C.mentorAccent}`,
+      padding: "24px",
+      marginBottom: 24
+    }
+  }, /*#__PURE__*/React.createElement("div", {
+    style: {
+      fontSize: 13,
+      fontWeight: 700,
+      color: C.mentorAccent,
+      marginBottom: 4
+    }
+  }, "API Key Anthropic"), /*#__PURE__*/React.createElement("div", {
+    style: {
+      fontSize: 11,
+      color: C.dim,
+      lineHeight: 1.7,
+      marginBottom: 20
+    }
+  }, "Cheia este folosit\u0103 pentru analiza AI a sesiunilor. Elevii nu au acces la aceast\u0103 sec\u021Biune.", /*#__PURE__*/React.createElement("br", null), "Ob\u021Bii cheia de la: ", /*#__PURE__*/React.createElement("span", {
+    style: {
+      color: C.gold
+    }
+  }, "console.anthropic.com"), " \u2192 API Keys"), !editing ? /*#__PURE__*/React.createElement("div", null, /*#__PURE__*/React.createElement("div", {
+    style: {
+      display: "flex",
+      alignItems: "center",
+      gap: 12,
+      marginBottom: 16,
+      padding: "12px 16px",
+      background: C.surface2,
+      border: `1px solid ${C.border}`,
+      borderRadius: 2
+    }
+  }, /*#__PURE__*/React.createElement("div", {
+    style: {
+      flex: 1
+    }
+  }, /*#__PURE__*/React.createElement("div", {
+    style: {
+      fontSize: 9,
+      color: C.dim,
+      letterSpacing: 2,
+      marginBottom: 4
+    }
+  }, "CHEIE CURENT\u0102"), /*#__PURE__*/React.createElement("div", {
+    style: {
+      fontSize: 12,
+      color: current ? C.green : C.red,
+      fontFamily: font
+    }
+  }, current ? masked : "⚠ Nicio cheie configurată — analiza AI nu funcționează")), ok && /*#__PURE__*/React.createElement("span", {
+    style: {
+      fontSize: 11,
+      color: C.green
+    }
+  }, "\u2713 Salvat\u0103")), /*#__PURE__*/React.createElement(Btn, {
+    variant: "mentor",
+    small: true,
+    onClick: () => {
+      setEditing(true);
+      setDraft("");
+      setErr("");
+    }
+  }, current ? "SCHIMBĂ CHEIA" : "ADAUGĂ CHEIE API")) : /*#__PURE__*/React.createElement("div", null, /*#__PURE__*/React.createElement("div", {
+    style: {
+      marginBottom: 12
+    }
+  }, /*#__PURE__*/React.createElement("div", {
+    style: {
+      fontSize: 9,
+      color: C.dim,
+      letterSpacing: 2,
+      marginBottom: 8
+    }
+  }, "CHEIE NOU\u0102"), /*#__PURE__*/React.createElement(Input, {
+    value: draft,
+    onChange: setDraft,
+    placeholder: "sk-ant-api03-...",
+    type: "password"
+  })), err && /*#__PURE__*/React.createElement("div", {
+    style: {
+      color: C.red,
+      fontSize: 11,
+      marginBottom: 12,
+      padding: "8px 12px",
+      background: C.red + "10",
+      border: `1px solid ${C.red}30`
+    }
+  }, err), /*#__PURE__*/React.createElement("div", {
+    style: {
+      display: "flex",
+      gap: 10
+    }
+  }, /*#__PURE__*/React.createElement(Btn, {
+    variant: "mentor",
+    small: true,
+    onClick: testAndSave,
+    disabled: testing || !draft.trim()
+  }, testing ? "SE VERIFICĂ..." : "VERIFICĂ ȘI SALVEAZĂ"), /*#__PURE__*/React.createElement(Btn, {
+    variant: "ghost",
+    small: true,
+    onClick: () => setEditing(false)
+  }, "ANULEAZ\u0102")), /*#__PURE__*/React.createElement("div", {
+    style: {
+      marginTop: 12,
+      fontSize: 10,
+      color: C.dim
+    }
+  }, "Cheia este verificat\u0103 live cu Anthropic \xEEnainte de salvare.")));
+}
+
+// ─── Mentor View ──────────────────────────────────────────────────────────────
+function MentorView({
+  onLogout
+}) {
+  const [tab, setTab] = useState("dashboard");
+  const [students, setStudents] = useState([]);
+  const [studentData, setStudentData] = useState({});
+  const [selected, setSelected] = useState(null);
+  const [loading, setLoading] = useState(true);
+  const [saving, setSaving] = useState(false);
+  const [course, setCourse] = useState([]);
+  const [newLesson, setNewLesson] = useState({
+    title: "",
+    description: ""
+  });
+  const [editLesson, setEditLesson] = useState(null);
+  const [objDraft, setObjDraft] = useState("");
+  const [fbDraft, setFbDraft] = useState({});
+  const [expanded, setExpanded] = useState(null);
+  const [lessonDates, setLessonDates] = useState({});
+  const [autoBackupTime, setAutoBackupTime] = useState(() => sGet("auto_backup_time") || "");
+  const [lastBackup, setLastBackup] = useState(() => sGet("last_backup_ts") || null);
+  const backupTimerRef = useRef(null);
+
+  // ── Backup function ────────────────────────────────────────────────────────
+  const doBackup = useCallback((studentList, silent = false) => {
+    const roster = studentList || sGet("roster") || [];
+    const keys = ["roster", "course", ...roster.map(n => {
+      const s = n.toLowerCase().replace(/\s+/g, "_");
+      return [`sessions__${s}`, `objectives__${s}`, `feedbacks__${s}`, `lessons__${s}`, `account__${s}`, `pin__${s}`];
+    }).flat()];
+    const backup = {};
+    keys.forEach(k => {
+      const v = sGet(k);
+      if (v !== null) backup[k] = v;
+    });
+    backup["__version__"] = "rop_v1";
+    backup["__date__"] = new Date().toISOString();
+    const blob = new Blob([JSON.stringify(backup, null, 2)], {
+      type: "application/json"
+    });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    const dateStr = new Date().toLocaleDateString("ro-RO").replace(/\./g, "-");
+    const timeStr = new Date().toLocaleTimeString("ro-RO", {
+      hour: "2-digit",
+      minute: "2-digit"
+    }).replace(/:/g, "-");
+    a.href = url;
+    a.download = `ROP-backup-${dateStr}_${timeStr}.json`;
+    a.click();
+    URL.revokeObjectURL(url);
+    const ts = new Date().toISOString();
+    sSet("last_backup_ts", ts);
+    setLastBackup(ts);
+    if (!silent) alert("✓ Backup descărcat cu succes.");
+  }, []);
+
+  // ── Auto-backup scheduler ──────────────────────────────────────────────────
+  useEffect(() => {
+    if (!autoBackupTime) {
+      clearTimeout(backupTimerRef.current);
+      return;
+    }
+    const schedule = () => {
+      const now = new Date();
+      const [hh, mm] = autoBackupTime.split(":").map(Number);
+      const next = new Date(now);
+      next.setHours(hh, mm, 0, 0);
+      if (next <= now) next.setDate(next.getDate() + 1); // mâine dacă ora a trecut
+      const msUntil = next - now;
+      backupTimerRef.current = setTimeout(() => {
+        doBackup(null, true);
+        schedule(); // replanifică pentru ziua următoare
+      }, msUntil);
+    };
+    schedule();
+    return () => clearTimeout(backupTimerRef.current);
+  }, [autoBackupTime, doBackup]);
+  const loadAll = () => {
+    setLoading(true);
+    const roster = sGet("roster") || [];
+    const courseData = sGet("course") || [];
+    setStudents(roster);
+    setCourse(courseData);
+    const data = {};
+    roster.forEach(name => {
+      const slug = name.toLowerCase().replace(/\s+/g, "_");
+      data[name] = {
+        sessions: sGet(`sessions__${slug}`) || [],
+        objectives: sGet(`objectives__${slug}`) || "",
+        feedbacks: sGet(`feedbacks__${slug}`) || {},
+        lessons: sGet(`lessons__${slug}`) || {}
+      };
+    });
+    setStudentData(data);
+    setLoading(false);
+  };
+  useEffect(() => {
+    loadAll();
+  }, []);
+  const selectStudent = name => {
+    setSelected(name);
+    setTab("student");
+    setExpanded(null);
+    setFbDraft({});
+    const d = studentData[name] || {};
+    setObjDraft(d.objectives || "");
+    setLessonDates(d.lessons || {});
+  };
+  const saveObjectives = () => {
+    setSaving(true);
+    const slug = selected.toLowerCase().replace(/\s+/g, "_");
+    sSet(`objectives__${slug}`, objDraft);
+    setStudentData(p => ({
+      ...p,
+      [selected]: {
+        ...p[selected],
+        objectives: objDraft
+      }
+    }));
+    setSaving(false);
+  };
+  const saveFeedback = idx => {
+    var _studentData$selected;
+    const slug = selected.toLowerCase().replace(/\s+/g, "_");
+    const newFb = {
+      ...((studentData[selected] || {}).feedbacks || {}),
+      [idx]: fbDraft[idx] || ""
+    };
+    const updSessions = (((_studentData$selected = studentData[selected]) === null || _studentData$selected === void 0 ? void 0 : _studentData$selected.sessions) || []).map((s, i) => i === idx ? {
+      ...s,
+      mentorFeedback: fbDraft[idx] || ""
+    } : s);
+    sSet(`feedbacks__${slug}`, newFb);
+    sSet(`sessions__${slug}`, updSessions);
+    setStudentData(p => ({
+      ...p,
+      [selected]: {
+        ...p[selected],
+        feedbacks: newFb,
+        sessions: updSessions
+      }
+    }));
+  };
+  const saveLessonDate = (lessonId, date) => {
+    const slug = selected.toLowerCase().replace(/\s+/g, "_");
+    const updated = {
+      ...lessonDates,
+      [lessonId]: date
+    };
+    setLessonDates(updated);
+    sSet(`lessons__${slug}`, updated);
+    setStudentData(p => ({
+      ...p,
+      [selected]: {
+        ...p[selected],
+        lessons: updated
+      }
+    }));
+  };
+  const resetPin = name => {
+    if (!window.confirm(`Resetezi PIN-ul pentru ${name}?`)) return;
+    sDel(`pin__${name.toLowerCase().replace(/\s+/g, "_")}`);
+    alert(`PIN resetat pentru ${name}.`);
+  };
+  const addLesson = () => {
+    if (!newLesson.title.trim()) return;
+    const updated = [...course, {
+      id: Date.now().toString(),
+      title: newLesson.title,
+      description: newLesson.description
+    }];
+    setCourse(updated);
+    sSet("course", updated);
+    setNewLesson({
+      title: "",
+      description: ""
+    });
+  };
+  const removeLesson = id => {
+    const updated = course.filter(l => l.id !== id);
+    setCourse(updated);
+    sSet("course", updated);
+  };
+  const updateLesson = () => {
+    if (!editLesson) return;
+    const updated = course.map(l => l.id === editLesson.id ? editLesson : l);
+    setCourse(updated);
+    sSet("course", updated);
+    setEditLesson(null);
+  };
+  const clearAllData = () => {
+    if (!window.confirm("⚠ ATENȚIE: Șterge TOATE datele (elevi, sesiuni, curs). Ești sigur?")) return;
+    if (!window.confirm("Confirmare finală: acțiunea este ireversibilă.")) return;
+    const keys = ["roster", "course", ...students.map(n => {
+      const s = n.toLowerCase().replace(/\s+/g, "_");
+      return [`sessions__${s}`, `objectives__${s}`, `feedbacks__${s}`, `lessons__${s}`, `account__${s}`, `pin__${s}`];
+    }).flat()];
+    keys.forEach(k => sDel(k));
+    setStudents([]);
+    setStudentData({});
+    setCourse([]);
+    setSelected(null);
+    setTab("dashboard");
+    alert("Toate datele au fost șterse.");
+  };
+  const getStudentSummary = name => {
+    const d = studentData[name] || {};
+    const sessions = d.sessions || [];
+    if (!sessions.length) return null;
+    const last = sessions[sessions.length - 1];
+    const totalPnl = sessions.reduce((s, h) => s + h.stats.totalPnl, 0);
+    const totalPts = sessions.reduce((s, h) => s + (h.stats.totalPoints || 0), 0);
+    const avgWr = sessions.reduce((s, h) => s + h.stats.winRate, 0) / sessions.length;
+    const pnlCurve = sessions.map(s => s.stats.totalPnl).reduce((acc, v) => [...acc, (acc[acc.length - 1] || 0) + v], []);
+    const lastVerdicts = sessions.slice(-5).map(s => {
+      var _s$analysis;
+      return (_s$analysis = s.analysis) === null || _s$analysis === void 0 ? void 0 : _s$analysis.verdict;
+    }).filter(Boolean);
+    const trend = sessions.length >= 3 ? (() => {
+      const r = sessions.slice(-3).map(s => s.stats.winRate);
+      const p = sessions.slice(-6, -3).map(s => s.stats.winRate);
+      if (!p.length) return "→";
+      const diff = r.reduce((a, b) => a + b, 0) / r.length - p.reduce((a, b) => a + b, 0) / p.length;
+      return diff > 2 ? "↑" : diff < -2 ? "↓" : "→";
+    })() : "→";
+    return {
+      sessions,
+      last,
+      totalPnl,
+      totalPts,
+      avgWr,
+      pnlCurve,
+      lastVerdicts,
+      trend,
+      lessonsCompleted: Object.keys(d.lessons || {}).filter(id => d.lessons[id]).length
+    };
+  };
+  const vc = v => v === "BUNĂ" ? C.green : v === "SLABĂ" ? C.red : C.gold;
+  const tc = t => t === "↑" ? C.green : t === "↓" ? C.red : C.gold;
+  if (loading) return /*#__PURE__*/React.createElement("div", {
+    style: {
+      minHeight: "100vh",
+      background: C.bg,
+      display: "flex",
+      alignItems: "center",
+      justifyContent: "center"
+    }
+  }, /*#__PURE__*/React.createElement(Spinner, {
+    label: "SE \xCENCARC\u0102..."
+  }));
+  const selData = selected ? studentData[selected] || {} : {};
+  const selSessions = selData.sessions || [];
+  const tabs = [{
+    id: "dashboard",
+    label: "📊 Dashboard"
+  }, {
+    id: "student",
+    label: "👤 Elev",
+    disabled: !selected
+  }, {
+    id: "course",
+    label: "📚 Curs"
+  }, {
+    id: "settings",
+    label: "⚙ Setări"
+  }];
+  return /*#__PURE__*/React.createElement("div", {
+    style: {
+      minHeight: "100vh",
+      background: C.bg,
+      fontFamily: font
+    }
+  }, /*#__PURE__*/React.createElement("div", {
+    style: {
+      background: C.surface,
+      borderBottom: `1px solid ${C.border}`,
+      padding: "0 32px",
+      display: "flex",
+      justifyContent: "space-between",
+      alignItems: "stretch"
+    }
+  }, /*#__PURE__*/React.createElement("div", {
+    style: {
+      display: "flex",
+      alignItems: "center",
+      gap: 4
+    }
+  }, /*#__PURE__*/React.createElement("span", {
+    style: {
+      fontSize: 13,
+      fontWeight: 700,
+      color: C.mentorAccent,
+      letterSpacing: 2,
+      paddingRight: 16,
+      borderRight: `1px solid ${C.border}`,
+      marginRight: 8
+    }
+  }, "ROP TRADING ACADEMY"), tabs.map(t => /*#__PURE__*/React.createElement("button", {
+    key: t.id,
+    onClick: () => !t.disabled && setTab(t.id),
+    disabled: t.disabled,
+    style: {
+      fontFamily: font,
+      fontSize: 11,
+      letterSpacing: 1,
+      background: "none",
+      border: "none",
+      cursor: t.disabled ? "not-allowed" : "pointer",
+      color: tab === t.id ? C.mentorAccent : t.disabled ? C.dim + "50" : C.dim,
+      borderBottom: tab === t.id ? `2px solid ${C.mentorAccent}` : "2px solid transparent",
+      padding: "16px 12px",
+      marginBottom: -1,
+      transition: "all .15s"
+    }
+  }, t.label))), /*#__PURE__*/React.createElement("div", {
+    style: {
+      display: "flex",
+      gap: 12,
+      alignItems: "center"
+    }
+  }, /*#__PURE__*/React.createElement(Btn, {
+    variant: "ghost",
+    small: true,
+    onClick: loadAll
+  }, "\u21BB"), /*#__PURE__*/React.createElement(Btn, {
+    variant: "ghost",
+    small: true,
+    onClick: onLogout
+  }, "IE\u0218IRE"))), /*#__PURE__*/React.createElement("div", {
+    style: {
+      padding: "32px 36px",
+      maxWidth: 1200,
+      margin: "0 auto"
+    }
+  }, tab === "dashboard" && /*#__PURE__*/React.createElement("div", null, /*#__PURE__*/React.createElement("div", {
+    style: {
+      marginBottom: 28
+    }
+  }, /*#__PURE__*/React.createElement("div", {
+    style: {
+      fontSize: 20,
+      fontWeight: 700,
+      color: C.text,
+      marginBottom: 6
+    }
+  }, "Dashboard Mentor"), /*#__PURE__*/React.createElement("div", {
+    style: {
+      fontSize: 11,
+      color: C.dim
+    }
+  }, students.length, " elevi \xB7 ", course.length, " lec\u021Bii")), students.length === 0 ? /*#__PURE__*/React.createElement("div", {
+    style: {
+      textAlign: "center",
+      padding: "80px",
+      color: C.dim
+    }
+  }, /*#__PURE__*/React.createElement("div", {
+    style: {
+      fontSize: 32,
+      marginBottom: 16
+    }
+  }, "\uD83C\uDF93"), /*#__PURE__*/React.createElement("div", {
+    style: {
+      fontSize: 12,
+      letterSpacing: 2
+    }
+  }, "NICIUN ELEV \xCENREGISTRAT"), /*#__PURE__*/React.createElement("div", {
+    style: {
+      fontSize: 11,
+      color: C.dim + "80",
+      marginTop: 8
+    }
+  }, "Elevii apar automat la primul login.")) : /*#__PURE__*/React.createElement("div", null, /*#__PURE__*/React.createElement(DashboardStats, {
+    students: students,
+    studentData: studentData,
+    course: course
+  }), /*#__PURE__*/React.createElement(SectionTitle, null, "To\u021Bi elevii"), /*#__PURE__*/React.createElement("div", {
+    style: {
+      display: "grid",
+      gridTemplateColumns: "repeat(auto-fill, minmax(300px,1fr))",
+      gap: 16
+    }
+  }, students.map(name => {
+    var _sum$last$analysis;
+    const sum = getStudentSummary(name);
+    return /*#__PURE__*/React.createElement("div", {
+      key: name,
+      onClick: () => selectStudent(name),
+      style: {
+        background: C.surface,
+        border: `1px solid ${C.border}`,
+        borderRadius: 2,
+        cursor: "pointer",
+        overflow: "hidden"
+      },
+      onMouseEnter: e => e.currentTarget.style.borderColor = C.mentorAccent + "60",
+      onMouseLeave: e => e.currentTarget.style.borderColor = C.border
+    }, /*#__PURE__*/React.createElement("div", {
+      style: {
+        padding: "16px 18px",
+        borderBottom: `1px solid ${C.border}`,
+        display: "flex",
+        justifyContent: "space-between",
+        alignItems: "flex-start"
+      }
+    }, /*#__PURE__*/React.createElement("div", null, /*#__PURE__*/React.createElement("div", {
+      style: {
+        fontSize: 14,
+        fontWeight: 700,
+        color: C.text,
+        marginBottom: 4
+      }
+    }, name), sum ? /*#__PURE__*/React.createElement("div", {
+      style: {
+        fontSize: 10,
+        color: C.dim
+      }
+    }, sum.sessions.length, " sesiuni \xB7 ultima: ", sum.last.date) : /*#__PURE__*/React.createElement("div", {
+      style: {
+        fontSize: 10,
+        color: C.dim + "60"
+      }
+    }, "Nicio sesiune \xEEnc\u0103")), sum && /*#__PURE__*/React.createElement("div", {
+      style: {
+        display: "flex",
+        alignItems: "center",
+        gap: 8
+      }
+    }, /*#__PURE__*/React.createElement("span", {
+      style: {
+        fontSize: 20,
+        color: tc(sum.trend)
+      }
+    }, sum.trend), ((_sum$last$analysis = sum.last.analysis) === null || _sum$last$analysis === void 0 ? void 0 : _sum$last$analysis.verdict) && /*#__PURE__*/React.createElement(Badge, {
+      label: sum.last.analysis.verdict,
+      color: vc(sum.last.analysis.verdict)
+    }))), sum ? /*#__PURE__*/React.createElement("div", {
+      style: {
+        padding: "16px 18px"
+      }
+    }, /*#__PURE__*/React.createElement("div", {
+      style: {
+        display: "grid",
+        gridTemplateColumns: "1fr 1fr 1fr",
+        gap: 8,
+        marginBottom: 16
+      }
+    }, [{
+      label: "WR Mediu",
+      value: `${sum.avgWr.toFixed(1)}%`,
+      color: sum.avgWr >= 50 ? C.green : C.red
+    }, {
+      label: "P&L Total",
+      value: `${sum.totalPnl >= 0 ? "+" : ""}${sum.totalPnl.toFixed(0)}`,
+      color: sum.totalPnl >= 0 ? C.green : C.red
+    }, {
+      label: "Puncte Total",
+      value: `${sum.totalPts >= 0 ? "+" : ""}${sum.totalPts.toFixed(0)}`,
+      color: sum.totalPts >= 0 ? C.green : C.red
+    }].map(m => /*#__PURE__*/React.createElement("div", {
+      key: m.label,
+      style: {
+        background: C.surface2,
+        padding: "8px 10px",
+        borderRadius: 2
+      }
+    }, /*#__PURE__*/React.createElement("div", {
+      style: {
+        fontSize: 8,
+        color: C.dim,
+        letterSpacing: 1.5,
+        marginBottom: 3
+      }
+    }, m.label), /*#__PURE__*/React.createElement("div", {
+      style: {
+        fontSize: 14,
+        fontWeight: 700,
+        color: m.color
+      }
+    }, m.value)))), /*#__PURE__*/React.createElement("div", {
+      style: {
+        marginBottom: 12
+      }
+    }, /*#__PURE__*/React.createElement("div", {
+      style: {
+        fontSize: 8,
+        color: C.dim,
+        letterSpacing: 2,
+        marginBottom: 6
+      }
+    }, "P&L CUMULAT"), /*#__PURE__*/React.createElement(Sparkline, {
+      data: sum.pnlCurve,
+      width: 240,
+      height: 32
+    })), /*#__PURE__*/React.createElement("div", {
+      style: {
+        display: "flex",
+        gap: 4,
+        alignItems: "center",
+        flexWrap: "wrap"
+      }
+    }, /*#__PURE__*/React.createElement("span", {
+      style: {
+        fontSize: 8,
+        color: C.dim,
+        letterSpacing: 1.5,
+        marginRight: 4
+      }
+    }, "ULTIME 5:"), sum.lastVerdicts.map((v, i) => /*#__PURE__*/React.createElement("span", {
+      key: i,
+      style: {
+        width: 8,
+        height: 8,
+        borderRadius: "50%",
+        background: vc(v),
+        display: "inline-block"
+      },
+      title: v
+    }))), course.length > 0 && /*#__PURE__*/React.createElement("div", {
+      style: {
+        marginTop: 10,
+        display: "flex",
+        alignItems: "center",
+        gap: 8
+      }
+    }, /*#__PURE__*/React.createElement("div", {
+      style: {
+        flex: 1,
+        height: 3,
+        background: C.border,
+        borderRadius: 2,
+        overflow: "hidden"
+      }
+    }, /*#__PURE__*/React.createElement("div", {
+      style: {
+        width: `${sum.lessonsCompleted / course.length * 100}%`,
+        height: "100%",
+        background: C.mentorAccent
+      }
+    })), /*#__PURE__*/React.createElement("span", {
+      style: {
+        fontSize: 10,
+        color: C.dim
+      }
+    }, sum.lessonsCompleted, "/", course.length, " lec\u021Bii"))) : /*#__PURE__*/React.createElement("div", {
+      style: {
+        padding: "16px 18px",
+        fontSize: 11,
+        color: C.dim + "60"
+      }
+    }, "F\u0103r\u0103 sesiuni."));
+  })))), tab === "student" && selected && /*#__PURE__*/React.createElement("div", null, /*#__PURE__*/React.createElement("div", {
+    style: {
+      display: "flex",
+      justifyContent: "space-between",
+      alignItems: "flex-start",
+      marginBottom: 28
+    }
+  }, /*#__PURE__*/React.createElement("div", null, /*#__PURE__*/React.createElement("div", {
+    style: {
+      display: "flex",
+      alignItems: "center",
+      gap: 12,
+      marginBottom: 6
+    }
+  }, /*#__PURE__*/React.createElement("div", {
+    style: {
+      fontSize: 22,
+      fontWeight: 700,
+      color: C.text
+    }
+  }, selected), /*#__PURE__*/React.createElement(StudentTrend, {
+    summary: getStudentSummary(selected),
+    tc: tc
+  })), /*#__PURE__*/React.createElement("div", {
+    style: {
+      display: "flex",
+      gap: 12,
+      alignItems: "center"
+    }
+  }, /*#__PURE__*/React.createElement("div", {
+    style: {
+      fontSize: 10,
+      color: C.dim
+    }
+  }, selSessions.length, " sesiuni"), /*#__PURE__*/React.createElement("button", {
+    onClick: () => resetPin(selected),
+    style: {
+      fontFamily: font,
+      fontSize: 9,
+      letterSpacing: 1,
+      color: C.red,
+      background: C.red + "10",
+      border: `1px solid ${C.red}30`,
+      padding: "3px 10px",
+      borderRadius: 2,
+      cursor: "pointer"
+    }
+  }, "RESET PIN"))), selSessions.length > 0 && /*#__PURE__*/React.createElement("div", {
+    style: {
+      display: "flex",
+      gap: 10
+    }
+  }, /*#__PURE__*/React.createElement(StatTile, {
+    label: "WR Mediu",
+    small: true,
+    value: `${(selSessions.reduce((s, h) => s + h.stats.winRate, 0) / selSessions.length).toFixed(1)}%`,
+    color: C.mentorAccent
+  }), /*#__PURE__*/React.createElement(StatTile, {
+    label: "Puncte",
+    small: true,
+    value: `${selSessions.reduce((s, h) => s + (h.stats.totalPoints || 0), 0) >= 0 ? "+" : ""}${selSessions.reduce((s, h) => s + (h.stats.totalPoints || 0), 0).toFixed(0)}`,
+    color: selSessions.reduce((s, h) => s + (h.stats.totalPoints || 0), 0) >= 0 ? C.green : C.red
+  }), /*#__PURE__*/React.createElement(StatTile, {
+    label: "P&L Cumulat",
+    small: true,
+    value: selSessions.reduce((s, h) => s + h.stats.totalPnl, 0).toFixed(0),
+    color: selSessions.reduce((s, h) => s + h.stats.totalPnl, 0) >= 0 ? C.green : C.red
+  }))), /*#__PURE__*/React.createElement("div", {
+    style: {
+      marginBottom: 28,
+      background: C.surface,
+      border: `1px solid ${C.border}`,
+      borderTop: `2px solid ${C.mentorAccent}`,
+      padding: "20px"
+    }
+  }, /*#__PURE__*/React.createElement(SectionTitle, null, "Obiective pentru ", selected), /*#__PURE__*/React.createElement(Textarea, {
+    value: objDraft,
+    onChange: setObjDraft,
+    placeholder: "Ex: RR minim 1.5, max 3 traduri/zi, minim +50 pct/sesiune",
+    rows: 3
+  }), /*#__PURE__*/React.createElement("div", {
+    style: {
+      marginTop: 12,
+      display: "flex",
+      gap: 12,
+      alignItems: "center"
+    }
+  }, /*#__PURE__*/React.createElement(Btn, {
+    variant: "mentor",
+    small: true,
+    onClick: saveObjectives,
+    disabled: saving
+  }, saving ? "SE SALVEAZĂ..." : "SALVEAZĂ OBIECTIVE"), selData.objectives && /*#__PURE__*/React.createElement("span", {
+    style: {
+      fontSize: 10,
+      color: C.green
+    }
+  }, "\u2713 Active"))), course.length > 0 && /*#__PURE__*/React.createElement("div", {
+    style: {
+      marginBottom: 28
+    }
+  }, /*#__PURE__*/React.createElement(SectionTitle, null, "Progres curs \u2014 ", selected), /*#__PURE__*/React.createElement("div", {
+    style: {
+      display: "grid",
+      gridTemplateColumns: "repeat(auto-fill, minmax(260px,1fr))",
+      gap: 10
+    }
+  }, course.map((lesson, idx) => {
+    const done = lessonDates[lesson.id];
+    return /*#__PURE__*/React.createElement("div", {
+      key: lesson.id,
+      style: {
+        background: C.surface,
+        border: `1px solid ${done ? C.mentorAccent + "40" : C.border}`,
+        borderLeft: `4px solid ${done ? C.mentorAccent : C.border}`,
+        padding: "14px 16px",
+        borderRadius: 2
+      }
+    }, /*#__PURE__*/React.createElement("div", {
+      style: {
+        display: "flex",
+        justifyContent: "space-between",
+        alignItems: "flex-start",
+        marginBottom: 8
+      }
+    }, /*#__PURE__*/React.createElement("div", null, /*#__PURE__*/React.createElement("div", {
+      style: {
+        fontSize: 9,
+        color: C.dim,
+        letterSpacing: 1.5,
+        marginBottom: 3
+      }
+    }, "LEC\u021AIA ", idx + 1), /*#__PURE__*/React.createElement("div", {
+      style: {
+        fontSize: 12,
+        fontWeight: 700,
+        color: done ? C.mentorAccent : C.text
+      }
+    }, lesson.title), lesson.description && /*#__PURE__*/React.createElement("div", {
+      style: {
+        fontSize: 10,
+        color: C.dim,
+        marginTop: 3,
+        lineHeight: 1.5
+      }
+    }, lesson.description)), done && /*#__PURE__*/React.createElement("span", {
+      style: {
+        fontSize: 16
+      }
+    }, "\u2713")), /*#__PURE__*/React.createElement("div", {
+      style: {
+        display: "flex",
+        gap: 8,
+        alignItems: "center"
+      }
+    }, /*#__PURE__*/React.createElement("input", {
+      type: "date",
+      value: done || "",
+      onChange: e => saveLessonDate(lesson.id, e.target.value),
+      style: {
+        fontFamily: font,
+        fontSize: 11,
+        background: C.surface2,
+        border: `1px solid ${C.border}`,
+        color: C.text,
+        padding: "5px 8px",
+        borderRadius: 2,
+        outline: "none",
+        flex: 1
+      }
+    }), done && /*#__PURE__*/React.createElement("button", {
+      onClick: () => saveLessonDate(lesson.id, ""),
+      style: {
+        background: "none",
+        border: "none",
+        color: C.red,
+        cursor: "pointer",
+        fontSize: 14
+      }
+    }, "\xD7")), done && /*#__PURE__*/React.createElement("div", {
+      style: {
+        fontSize: 9,
+        color: C.mentorAccent,
+        marginTop: 5
+      }
+    }, "Efectuat: ", new Date(done).toLocaleDateString("ro-RO")));
+  }))), selSessions.length === 0 ? /*#__PURE__*/React.createElement("div", {
+    style: {
+      textAlign: "center",
+      padding: "40px",
+      color: C.dim,
+      fontSize: 12
+    }
+  }, "Elevul nu a \xEEnregistrat sesiuni.") : /*#__PURE__*/React.createElement("div", null, /*#__PURE__*/React.createElement(SectionTitle, null, "Sesiuni (", selSessions.length, ")"), [...selSessions].reverse().map((sess, revIdx) => {
+    var _sess$analysis7, _sess$stats$accountAf, _sess$stats$accountPc;
+    const idx = selSessions.length - 1 - revIdx;
+    const isOpen = expanded === idx;
+    const fb = (selData.feedbacks || {})[idx];
+    return /*#__PURE__*/React.createElement("div", {
+      key: idx,
+      style: {
+        background: C.surface,
+        border: `1px solid ${isOpen ? C.mentorAccent + "40" : C.border}`,
+        marginBottom: 10,
+        borderRadius: 2
+      }
+    }, /*#__PURE__*/React.createElement("div", {
+      onClick: () => setExpanded(isOpen ? null : idx),
+      style: {
+        display: "flex",
+        justifyContent: "space-between",
+        alignItems: "center",
+        padding: "14px 18px",
+        cursor: "pointer"
+      }
+    }, /*#__PURE__*/React.createElement("div", {
+      style: {
+        display: "flex",
+        gap: 14,
+        alignItems: "center"
+      }
+    }, /*#__PURE__*/React.createElement("span", {
+      style: {
+        fontSize: 11,
+        color: C.dim
+      }
+    }, sess.date), ((_sess$analysis7 = sess.analysis) === null || _sess$analysis7 === void 0 ? void 0 : _sess$analysis7.verdict) && /*#__PURE__*/React.createElement(Badge, {
+      label: sess.analysis.verdict,
+      color: vc(sess.analysis.verdict)
+    }), /*#__PURE__*/React.createElement("span", {
+      style: {
+        fontSize: 10,
+        color: C.dim
+      }
+    }, sess.tradeCount, "T"), fb && /*#__PURE__*/React.createElement(Badge, {
+      label: "FEEDBACK",
+      color: C.mentorAccent
+    })), /*#__PURE__*/React.createElement("div", {
+      style: {
+        display: "flex",
+        gap: 20,
+        alignItems: "center"
+      }
+    }, /*#__PURE__*/React.createElement("span", {
+      style: {
+        fontSize: 11,
+        color: (sess.stats.totalPoints || 0) >= 0 ? C.green + "90" : C.red + "90"
+      }
+    }, (sess.stats.totalPoints || 0) >= 0 ? "+" : "", (sess.stats.totalPoints || 0).toFixed(1), " pct"), /*#__PURE__*/React.createElement("span", {
+      style: {
+        fontSize: 13,
+        fontWeight: 700,
+        color: sess.stats.totalPnl >= 0 ? C.green : C.red
+      }
+    }, sess.stats.totalPnl >= 0 ? "+" : "", sess.stats.totalPnl.toFixed(2)), sess.accountSize > 0 && sess.stats.accountAfter && /*#__PURE__*/React.createElement("span", {
+      style: {
+        fontSize: 11,
+        color: C.dim
+      }
+    }, "Cont: ", /*#__PURE__*/React.createElement("span", {
+      style: {
+        color: sess.stats.accountPct >= 0 ? C.green : C.red
+      }
+    }, sess.stats.accountAfter.toFixed(0))), /*#__PURE__*/React.createElement("span", {
+      style: {
+        fontSize: 11,
+        color: C.dim
+      }
+    }, "WR ", sess.stats.winRate.toFixed(0), "%"), /*#__PURE__*/React.createElement("span", {
+      style: {
+        color: C.dim
+      }
+    }, isOpen ? "▲" : "▼"))), isOpen && /*#__PURE__*/React.createElement("div", {
+      style: {
+        borderTop: `1px solid ${C.border}`,
+        padding: "20px 18px"
+      }
+    }, /*#__PURE__*/React.createElement("div", {
+      style: {
+        display: "grid",
+        gridTemplateColumns: "repeat(4,1fr)",
+        gap: 10,
+        marginBottom: 20
+      }
+    }, /*#__PURE__*/React.createElement(StatTile, {
+      label: "Win Rate",
+      small: true,
+      value: `${sess.stats.winRate.toFixed(1)}%`,
+      color: sess.stats.winRate >= 50 ? C.green : C.red
+    }), /*#__PURE__*/React.createElement(StatTile, {
+      label: "Puncte",
+      small: true,
+      value: `${(sess.stats.totalPoints || 0) >= 0 ? "+" : ""}${(sess.stats.totalPoints || 0).toFixed(1)}`,
+      color: (sess.stats.totalPoints || 0) >= 0 ? C.green : C.red,
+      sub: `RR pct: ${(sess.stats.rrPts || 0).toFixed(2)}`
+    }), /*#__PURE__*/React.createElement(StatTile, {
+      label: "P&L",
+      small: true,
+      value: `${sess.stats.totalPnl >= 0 ? "+" : ""}${sess.stats.totalPnl.toFixed(2)}`,
+      color: sess.stats.totalPnl >= 0 ? C.green : C.red,
+      sub: `RR: ${sess.stats.rr.toFixed(2)}`
+    }), sess.accountSize > 0 ? /*#__PURE__*/React.createElement(StatTile, {
+      label: "Cont",
+      small: true,
+      value: ((_sess$stats$accountAf = sess.stats.accountAfter) === null || _sess$stats$accountAf === void 0 ? void 0 : _sess$stats$accountAf.toFixed(0)) || "-",
+      color: sess.stats.accountPct >= 0 ? C.green : C.red,
+      sub: `${sess.stats.accountPct >= 0 ? "+" : ""}${(_sess$stats$accountPc = sess.stats.accountPct) === null || _sess$stats$accountPc === void 0 ? void 0 : _sess$stats$accountPc.toFixed(1)}%`
+    }) : /*#__PURE__*/React.createElement(StatTile, {
+      label: "W/L",
+      small: true,
+      value: `${sess.stats.wins}/${sess.stats.losses}`
+    })), sess.analysis && /*#__PURE__*/React.createElement("div", {
+      style: {
+        marginBottom: 20
+      }
+    }, /*#__PURE__*/React.createElement("div", {
+      style: {
+        fontSize: 10,
+        color: C.dim,
+        letterSpacing: 2,
+        marginBottom: 10
+      }
+    }, "ANALIZA AI"), /*#__PURE__*/React.createElement("div", {
+      style: {
+        fontSize: 12,
+        color: C.text,
+        lineHeight: 1.7,
+        marginBottom: 12,
+        padding: "12px 16px",
+        background: C.bg,
+        border: `1px solid ${C.border}`
+      }
+    }, sess.analysis.rezumat), /*#__PURE__*/React.createElement("div", {
+      style: {
+        display: "grid",
+        gridTemplateColumns: "1fr 1fr",
+        gap: 12
+      }
+    }, /*#__PURE__*/React.createElement("div", null, /*#__PURE__*/React.createElement("div", {
+      style: {
+        fontSize: 9,
+        color: C.green,
+        letterSpacing: 2,
+        marginBottom: 8
+      }
+    }, "PUNCTE FORTE"), (sess.analysis.puncte_forte || []).map((p, i) => /*#__PURE__*/React.createElement("div", {
+      key: i,
+      style: {
+        fontSize: 11,
+        color: C.dim,
+        padding: "6px 10px",
+        borderLeft: `2px solid ${C.green}`,
+        marginBottom: 4
+      }
+    }, p))), /*#__PURE__*/React.createElement("div", null, /*#__PURE__*/React.createElement("div", {
+      style: {
+        fontSize: 9,
+        color: C.red,
+        letterSpacing: 2,
+        marginBottom: 8
+      }
+    }, "ERORI"), (sess.analysis.erori_identificate || []).map((e, i) => /*#__PURE__*/React.createElement("div", {
+      key: i,
+      style: {
+        fontSize: 11,
+        color: C.dim,
+        padding: "6px 10px",
+        borderLeft: `2px solid ${C.red}`,
+        marginBottom: 4
+      }
+    }, e))))), sess.notes && /*#__PURE__*/React.createElement("div", {
+      style: {
+        marginBottom: 20,
+        padding: "12px 16px",
+        background: C.bg,
+        border: `1px solid ${C.border}`
+      }
+    }, /*#__PURE__*/React.createElement("div", {
+      style: {
+        fontSize: 9,
+        color: C.dim,
+        letterSpacing: 2,
+        marginBottom: 6
+      }
+    }, "NOTE ELEV"), /*#__PURE__*/React.createElement("div", {
+      style: {
+        fontSize: 12,
+        color: C.text,
+        lineHeight: 1.6
+      }
+    }, sess.notes)), /*#__PURE__*/React.createElement("div", {
+      style: {
+        borderTop: `1px solid ${C.border}`,
+        paddingTop: 20
+      }
+    }, /*#__PURE__*/React.createElement("div", {
+      style: {
+        fontSize: 9,
+        color: C.mentorAccent,
+        letterSpacing: 2,
+        marginBottom: 10
+      }
+    }, "FEEDBACK MENTOR"), fb && /*#__PURE__*/React.createElement("div", {
+      style: {
+        marginBottom: 12,
+        padding: "12px 16px",
+        background: C.mentorAccent + "08",
+        border: `1px solid ${C.mentorAccent}25`,
+        fontSize: 12,
+        color: "#c7d2fe",
+        lineHeight: 1.6
+      }
+    }, fb), /*#__PURE__*/React.createElement(Textarea, {
+      value: fbDraft[idx] || "",
+      onChange: v => setFbDraft(p => ({
+        ...p,
+        [idx]: v
+      })),
+      placeholder: "Scrie feedback...",
+      rows: 3
+    }), /*#__PURE__*/React.createElement("div", {
+      style: {
+        marginTop: 10
+      }
+    }, /*#__PURE__*/React.createElement(Btn, {
+      variant: "mentor",
+      small: true,
+      onClick: () => saveFeedback(idx)
+    }, "TRIMITE FEEDBACK")))));
+  }))), tab === "course" && /*#__PURE__*/React.createElement("div", null, /*#__PURE__*/React.createElement("div", {
+    style: {
+      marginBottom: 28
+    }
+  }, /*#__PURE__*/React.createElement("div", {
+    style: {
+      fontSize: 20,
+      fontWeight: 700,
+      color: C.text,
+      marginBottom: 6
+    }
+  }, "Structura cursului"), /*#__PURE__*/React.createElement("div", {
+    style: {
+      fontSize: 11,
+      color: C.dim
+    }
+  }, "Adaug\u0103 lec\u021Biile cursului \u0219i marcheaz\u0103 progresul fiec\u0103rui elev.")), /*#__PURE__*/React.createElement("div", {
+    style: {
+      background: C.surface,
+      border: `1px solid ${C.border}`,
+      borderTop: `2px solid ${C.mentorAccent}`,
+      padding: "20px",
+      marginBottom: 28
+    }
+  }, /*#__PURE__*/React.createElement(SectionTitle, null, "Adaug\u0103 lec\u021Bie nou\u0103"), /*#__PURE__*/React.createElement("div", {
+    style: {
+      marginBottom: 12
+    }
+  }, /*#__PURE__*/React.createElement("div", {
+    style: {
+      fontSize: 9,
+      color: C.dim,
+      letterSpacing: 2,
+      marginBottom: 8
+    }
+  }, "TITLU LEC\u021AIE"), /*#__PURE__*/React.createElement(Input, {
+    value: newLesson.title,
+    onChange: v => setNewLesson(p => ({
+      ...p,
+      title: v
+    })),
+    placeholder: "ex: Introducere \xEEn price action"
+  })), /*#__PURE__*/React.createElement("div", {
+    style: {
+      marginBottom: 16
+    }
+  }, /*#__PURE__*/React.createElement("div", {
+    style: {
+      fontSize: 9,
+      color: C.dim,
+      letterSpacing: 2,
+      marginBottom: 8
+    }
+  }, "DESCRIERE (op\u021Bional)"), /*#__PURE__*/React.createElement(Textarea, {
+    value: newLesson.description,
+    onChange: v => setNewLesson(p => ({
+      ...p,
+      description: v
+    })),
+    placeholder: "Ce acoper\u0103 aceast\u0103 lec\u021Bie...",
+    rows: 2
+  })), /*#__PURE__*/React.createElement(Btn, {
+    variant: "mentor",
+    small: true,
+    onClick: addLesson,
+    disabled: !newLesson.title.trim()
+  }, "ADAUG\u0102 LEC\u021AIE +")), course.length === 0 ? /*#__PURE__*/React.createElement("div", {
+    style: {
+      textAlign: "center",
+      padding: "60px",
+      color: C.dim
+    }
+  }, /*#__PURE__*/React.createElement("div", {
+    style: {
+      fontSize: 32,
+      marginBottom: 16
+    }
+  }, "\uD83D\uDCDA"), /*#__PURE__*/React.createElement("div", {
+    style: {
+      fontSize: 12,
+      letterSpacing: 2
+    }
+  }, "NICIO LEC\u021AIE AD\u0102UGAT\u0102")) : /*#__PURE__*/React.createElement("div", null, /*#__PURE__*/React.createElement(SectionTitle, null, "Lec\u021Bii (", course.length, ")"), course.map((lesson, idx) => /*#__PURE__*/React.createElement("div", {
+    key: lesson.id,
+    style: {
+      background: C.surface,
+      border: `1px solid ${C.border}`,
+      marginBottom: 10,
+      borderRadius: 2,
+      overflow: "hidden"
+    }
+  }, (editLesson === null || editLesson === void 0 ? void 0 : editLesson.id) === lesson.id ? /*#__PURE__*/React.createElement("div", {
+    style: {
+      padding: "16px 18px"
+    }
+  }, /*#__PURE__*/React.createElement("div", {
+    style: {
+      marginBottom: 10
+    }
+  }, /*#__PURE__*/React.createElement(Input, {
+    value: editLesson.title,
+    onChange: v => setEditLesson(p => ({
+      ...p,
+      title: v
+    })),
+    placeholder: "Titlu"
+  })), /*#__PURE__*/React.createElement("div", {
+    style: {
+      marginBottom: 12
+    }
+  }, /*#__PURE__*/React.createElement(Textarea, {
+    value: editLesson.description || "",
+    onChange: v => setEditLesson(p => ({
+      ...p,
+      description: v
+    })),
+    placeholder: "Descriere",
+    rows: 2
+  })), /*#__PURE__*/React.createElement("div", {
+    style: {
+      display: "flex",
+      gap: 10
+    }
+  }, /*#__PURE__*/React.createElement(Btn, {
+    variant: "mentor",
+    small: true,
+    onClick: updateLesson
+  }, "SALVEAZ\u0102"), /*#__PURE__*/React.createElement(Btn, {
+    variant: "ghost",
+    small: true,
+    onClick: () => setEditLesson(null)
+  }, "ANULEAZ\u0102"))) : /*#__PURE__*/React.createElement("div", {
+    style: {
+      display: "flex",
+      justifyContent: "space-between",
+      alignItems: "center",
+      padding: "14px 18px"
+    }
+  }, /*#__PURE__*/React.createElement("div", {
+    style: {
+      display: "flex",
+      gap: 16,
+      alignItems: "center"
+    }
+  }, /*#__PURE__*/React.createElement("div", {
+    style: {
+      fontFamily: font,
+      fontSize: 12,
+      color: C.dim,
+      minWidth: 28
+    }
+  }, idx + 1, "."), /*#__PURE__*/React.createElement("div", null, /*#__PURE__*/React.createElement("div", {
+    style: {
+      fontSize: 13,
+      fontWeight: 700,
+      color: C.text
+    }
+  }, lesson.title), lesson.description && /*#__PURE__*/React.createElement("div", {
+    style: {
+      fontSize: 11,
+      color: C.dim,
+      marginTop: 3
+    }
+  }, lesson.description))), /*#__PURE__*/React.createElement("div", {
+    style: {
+      display: "flex",
+      gap: 8,
+      alignItems: "center"
+    }
+  }, /*#__PURE__*/React.createElement("span", {
+    style: {
+      fontSize: 10,
+      color: C.dim
+    }
+  }, students.filter(n => {
+    var _studentData$n4;
+    return (((_studentData$n4 = studentData[n]) === null || _studentData$n4 === void 0 ? void 0 : _studentData$n4.lessons) || {})[lesson.id];
+  }).length, "/", students.length, " elevi"), /*#__PURE__*/React.createElement("button", {
+    onClick: () => setEditLesson({
+      ...lesson
+    }),
+    style: {
+      background: "none",
+      border: `1px solid ${C.border}`,
+      color: C.dim,
+      cursor: "pointer",
+      fontFamily: font,
+      fontSize: 10,
+      padding: "4px 10px",
+      borderRadius: 2
+    }
+  }, "EDITEAZ\u0102"), /*#__PURE__*/React.createElement("button", {
+    onClick: () => removeLesson(lesson.id),
+    style: {
+      background: "none",
+      border: `1px solid ${C.red}30`,
+      color: C.red,
+      cursor: "pointer",
+      fontFamily: font,
+      fontSize: 10,
+      padding: "4px 10px",
+      borderRadius: 2
+    }
+  }, "\u0218TERGE"))))))), tab === "settings" && /*#__PURE__*/React.createElement("div", {
+    style: {
+      maxWidth: 600
+    }
+  }, /*#__PURE__*/React.createElement("div", {
+    style: {
+      marginBottom: 28
+    }
+  }, /*#__PURE__*/React.createElement("div", {
+    style: {
+      fontSize: 20,
+      fontWeight: 700,
+      color: C.text,
+      marginBottom: 6
+    }
+  }, "Set\u0103ri")), /*#__PURE__*/React.createElement(PasswordManager, null), /*#__PURE__*/React.createElement(ApiKeyManager, null), /*#__PURE__*/React.createElement("div", {
+    style: {
+      background: C.surface,
+      border: `1px solid ${C.mentorAccent}30`,
+      borderTop: `2px solid ${C.mentorAccent}`,
+      padding: "24px",
+      marginBottom: 24
+    }
+  }, /*#__PURE__*/React.createElement("div", {
+    style: {
+      fontSize: 13,
+      fontWeight: 700,
+      color: C.mentorAccent,
+      marginBottom: 8
+    }
+  }, "Partajare cu al\u021Bi mentori"), /*#__PURE__*/React.createElement("div", {
+    style: {
+      fontSize: 12,
+      color: C.dim,
+      lineHeight: 1.8,
+      marginBottom: 16
+    }
+  }, "Trimite fi\u0219ierul ", /*#__PURE__*/React.createElement("span", {
+    style: {
+      color: C.gold
+    }
+  }, "ROP-Trading-Academy.html"), " celuilalt mentor. Datele sunt salvate \xEEn ", /*#__PURE__*/React.createElement("strong", {
+    style: {
+      color: C.text
+    }
+  }, "browserul fiec\u0103rui utilizator"), " (localStorage), deci fiecare instalare e complet separat\u0103 \u0219i curat\u0103."), /*#__PURE__*/React.createElement("div", {
+    style: {
+      fontSize: 11,
+      color: C.dim,
+      background: C.surface2,
+      padding: "12px 16px",
+      border: `1px solid ${C.border}`,
+      lineHeight: 1.8
+    }
+  }, "\u26A0 Aten\u021Bie: datele elevilor sunt stocate local \xEEn browser. Dac\u0103 schimbi browserul sau PC-ul, datele nu se transfer\u0103 automat. F\u0103 backup regulat cu func\u021Bia de mai jos.")), /*#__PURE__*/React.createElement("div", {
+    style: {
+      background: C.surface,
+      border: `1px solid ${C.border}`,
+      borderTop: `2px solid ${C.gold}`,
+      padding: "24px",
+      marginBottom: 24
+    }
+  }, /*#__PURE__*/React.createElement("div", {
+    style: {
+      fontSize: 13,
+      fontWeight: 700,
+      color: C.gold,
+      marginBottom: 4
+    }
+  }, "Backup & Restore"), /*#__PURE__*/React.createElement("div", {
+    style: {
+      fontSize: 11,
+      color: C.dim,
+      lineHeight: 1.7,
+      marginBottom: 20
+    }
+  }, "Export\u0103 toate datele \xEEntr-un fi\u0219ier JSON. Import\u0103 pe orice PC/browser pentru restaurare complet\u0103."), /*#__PURE__*/React.createElement("div", {
+    style: {
+      display: "flex",
+      gap: 12,
+      flexWrap: "wrap",
+      marginBottom: 20
+    }
+  }, /*#__PURE__*/React.createElement(Btn, {
+    variant: "primary",
+    small: true,
+    onClick: () => doBackup(students)
+  }, "\u2B07 EXPORT\u0102 BACKUP ACUM"), /*#__PURE__*/React.createElement("label", {
+    style: {
+      fontFamily: font,
+      fontSize: 10,
+      letterSpacing: 2,
+      fontWeight: 700,
+      cursor: "pointer",
+      padding: "7px 14px",
+      borderRadius: 2,
+      background: "transparent",
+      color: C.dim,
+      border: `1px solid ${C.border}`
+    }
+  }, "\u2B06 IMPORT\u0102 BACKUP", /*#__PURE__*/React.createElement("input", {
+    type: "file",
+    accept: ".json",
+    style: {
+      display: "none"
+    },
+    onChange: e => {
+      const file = e.target.files[0];
+      if (!file) return;
+      const reader = new FileReader();
+      reader.onload = ev => {
+        try {
+          const data = JSON.parse(ev.target.result);
+          if (data.__version__ !== "rop_v1") {
+            alert("Fișier de backup invalid.");
+            return;
+          }
+          const d = new Date(data.__date__);
+          const dateStr = d.toLocaleDateString("ro-RO", {
+            day: "numeric",
+            month: "long",
+            year: "numeric"
+          }) + " la " + d.toLocaleTimeString("ro-RO", {
+            hour: "2-digit",
+            minute: "2-digit"
+          });
+          if (!window.confirm("Importă backup din " + dateStr + "?\n\nDatele existente vor fi suprascrise.")) return;
+          Object.entries(data).forEach(([k, v]) => {
+            if (!k.startsWith("__")) sSet(k, v);
+          });
+          alert("Backup importat cu succes! Aplicația se reîncarcă.");
+          window.location.reload();
+        } catch {
+          alert("Eroare la citirea fișierului JSON.");
+        }
+      };
+      reader.readAsText(file);
+      e.target.value = "";
+    }
+  }))), lastBackup && /*#__PURE__*/React.createElement("div", {
+    style: {
+      marginBottom: 20,
+      padding: "10px 14px",
+      background: C.green + "08",
+      border: `1px solid ${C.green}20`,
+      borderRadius: 2,
+      fontSize: 11,
+      color: C.dim
+    }
+  }, "\u2713 Ultimul backup: ", /*#__PURE__*/React.createElement("span", {
+    style: {
+      color: C.green
+    }
+  }, new Date(lastBackup).toLocaleDateString("ro-RO", {
+    day: "numeric",
+    month: "long",
+    year: "numeric"
+  }), " la ", new Date(lastBackup).toLocaleTimeString("ro-RO", {
+    hour: "2-digit",
+    minute: "2-digit"
+  }))), /*#__PURE__*/React.createElement("div", {
+    style: {
+      borderTop: `1px solid ${C.border}`,
+      paddingTop: 20
+    }
+  }, /*#__PURE__*/React.createElement("div", {
+    style: {
+      fontSize: 11,
+      fontWeight: 700,
+      color: C.text,
+      marginBottom: 6
+    }
+  }, "Backup automat zilnic"), /*#__PURE__*/React.createElement("div", {
+    style: {
+      fontSize: 10,
+      color: C.dim,
+      lineHeight: 1.7,
+      marginBottom: 14
+    }
+  }, "Seteaz\u0103 ora la care se descarc\u0103 automat un backup \xEEn fiecare zi.", " ", /*#__PURE__*/React.createElement("span", {
+    style: {
+      color: C.orange
+    }
+  }, "Aplica\u021Bia trebuie s\u0103 fie deschis\u0103 \xEEn browser la ora respectiv\u0103.")), /*#__PURE__*/React.createElement("div", {
+    style: {
+      display: "flex",
+      gap: 16,
+      alignItems: "flex-end",
+      flexWrap: "wrap"
+    }
+  }, /*#__PURE__*/React.createElement("div", null, /*#__PURE__*/React.createElement("div", {
+    style: {
+      fontSize: 9,
+      color: C.dim,
+      letterSpacing: 2,
+      marginBottom: 8
+    }
+  }, "ORA BACKUP AUTOMAT"), /*#__PURE__*/React.createElement("input", {
+    type: "time",
+    value: autoBackupTime,
+    onChange: e => {
+      const val = e.target.value;
+      setAutoBackupTime(val);
+      sSet("auto_backup_time", val || "");
+    },
+    style: {
+      fontFamily: font,
+      fontSize: 14,
+      background: C.surface2,
+      border: `1px solid ${autoBackupTime ? C.gold : C.border}`,
+      color: autoBackupTime ? C.gold : C.dim,
+      padding: "9px 14px",
+      borderRadius: 2,
+      outline: "none",
+      letterSpacing: 3
+    }
+  })), autoBackupTime && /*#__PURE__*/React.createElement("div", {
+    style: {
+      paddingBottom: 2
+    }
+  }, /*#__PURE__*/React.createElement("div", {
+    style: {
+      fontSize: 11,
+      color: C.green,
+      marginBottom: 6
+    }
+  }, "\u25CF Activ \u2014 backup zilnic la ", /*#__PURE__*/React.createElement("strong", null, autoBackupTime)), /*#__PURE__*/React.createElement("div", {
+    style: {
+      fontSize: 10,
+      color: C.dim
+    }
+  }, /*#__PURE__*/React.createElement(NextBackupLabel, {
+    time: autoBackupTime
+  }))), autoBackupTime && /*#__PURE__*/React.createElement("div", {
+    style: {
+      paddingBottom: 2
+    }
+  }, /*#__PURE__*/React.createElement("button", {
+    onClick: () => {
+      setAutoBackupTime("");
+      sSet("auto_backup_time", "");
+    },
+    style: {
+      fontFamily: font,
+      fontSize: 9,
+      letterSpacing: 1,
+      color: C.red,
+      background: C.red + "10",
+      border: `1px solid ${C.red}30`,
+      padding: "5px 14px",
+      borderRadius: 2,
+      cursor: "pointer"
+    }
+  }, "DEZACTIVEAZ\u0102"))))), /*#__PURE__*/React.createElement("div", {
+    style: {
+      background: C.surface,
+      border: `1px solid ${C.border}`,
+      padding: "20px",
+      marginBottom: 24
+    }
+  }, /*#__PURE__*/React.createElement(SectionTitle, null, "Elevi \xEEnregistra\u021Bi (", students.length, ")"), students.length === 0 ? /*#__PURE__*/React.createElement("div", {
+    style: {
+      fontSize: 11,
+      color: C.dim
+    }
+  }, "Niciun elev.") : students.map(name => {
+    var _studentData$name;
+    return /*#__PURE__*/React.createElement("div", {
+      key: name,
+      style: {
+        display: "flex",
+        justifyContent: "space-between",
+        alignItems: "center",
+        padding: "10px 14px",
+        background: C.surface2,
+        border: `1px solid ${C.border}`,
+        marginBottom: 6,
+        borderRadius: 2
+      }
+    }, /*#__PURE__*/React.createElement("div", null, /*#__PURE__*/React.createElement("div", {
+      style: {
+        fontSize: 12,
+        color: C.text
+      }
+    }, name), /*#__PURE__*/React.createElement("div", {
+      style: {
+        fontSize: 10,
+        color: C.dim
+      }
+    }, (((_studentData$name = studentData[name]) === null || _studentData$name === void 0 ? void 0 : _studentData$name.sessions) || []).length, " sesiuni")), /*#__PURE__*/React.createElement("button", {
+      onClick: () => resetPin(name),
+      style: {
+        fontFamily: font,
+        fontSize: 9,
+        letterSpacing: 1,
+        color: C.red,
+        background: C.red + "10",
+        border: `1px solid ${C.red}30`,
+        padding: "4px 12px",
+        borderRadius: 2,
+        cursor: "pointer"
+      }
+    }, "RESET PIN"));
+  })), /*#__PURE__*/React.createElement("div", {
+    style: {
+      background: C.red + "05",
+      border: `1px solid ${C.red}30`,
+      borderTop: `2px solid ${C.red}`,
+      padding: "24px"
+    }
+  }, /*#__PURE__*/React.createElement("div", {
+    style: {
+      fontSize: 13,
+      fontWeight: 700,
+      color: C.red,
+      marginBottom: 8
+    }
+  }, "Zona de pericol"), /*#__PURE__*/React.createElement("div", {
+    style: {
+      fontSize: 12,
+      color: C.dim,
+      lineHeight: 1.7,
+      marginBottom: 16
+    }
+  }, "\u0218terge TOATE datele din acest browser. Ac\u021Biunea este ", /*#__PURE__*/React.createElement("strong", {
+    style: {
+      color: C.red
+    }
+  }, "ireversibil\u0103"), "."), /*#__PURE__*/React.createElement(Btn, {
+    variant: "danger",
+    onClick: clearAllData
+  }, "\u0218TERGE TOATE DATELE")))));
+}
+
+// ─── Root ─────────────────────────────────────────────────────────────────────
+function StorageWarning() {
+  const [dismissed, setDismissed] = useState(false);
+  if (!_useMemory || dismissed) return null;
+  return /*#__PURE__*/React.createElement("div", {
+    style: {
+      position: "fixed",
+      bottom: 0,
+      left: 0,
+      right: 0,
+      background: C.orange + "ee",
+      padding: "12px 24px",
+      display: "flex",
+      justifyContent: "space-between",
+      alignItems: "center",
+      zIndex: 9999,
+      fontFamily: font
+    }
+  }, /*#__PURE__*/React.createElement("div", {
+    style: {
+      fontSize: 11,
+      color: "#07070a",
+      lineHeight: 1.6
+    }
+  }, "\u26A0 ", /*#__PURE__*/React.createElement("strong", null, "Edge blocheaz\u0103 stocarea local\u0103 pentru fi\u0219iere locale."), " Datele sunt salvate doar \xEEn sesiunea curent\u0103 \u0219i se pierd la \xEEnchiderea browserului. Solu\u021Bie: deschide fi\u0219ierul cu ", /*#__PURE__*/React.createElement("strong", null, "Chrome"), ", sau host-uie\u0219te-l pe un server local."), /*#__PURE__*/React.createElement("button", {
+    onClick: () => setDismissed(true),
+    style: {
+      background: "none",
+      border: `1px solid #07070a50`,
+      color: "#07070a",
+      cursor: "pointer",
+      fontFamily: font,
+      fontSize: 10,
+      padding: "4px 12px",
+      borderRadius: 2,
+      marginLeft: 16,
+      flexShrink: 0
+    }
+  }, "\xCENCHIDE"));
+}
+function App() {
+  const [user, setUser] = useState(null);
+  return /*#__PURE__*/React.createElement(React.Fragment, null, /*#__PURE__*/React.createElement(StorageWarning, null), !user ? /*#__PURE__*/React.createElement(AuthScreen, {
+    onLogin: setUser
+  }) : user.role === "student" ? /*#__PURE__*/React.createElement(StudentView, {
+    user: user,
+    onLogout: () => setUser(null)
+  }) : /*#__PURE__*/React.createElement(MentorView, {
+    onLogout: () => setUser(null)
+  }));
+}
+ReactDOM.render(/*#__PURE__*/React.createElement(App, null), document.getElementById("root"));
+
+</script>
+</body>
+</html>

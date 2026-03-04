@@ -1,0 +1,17 @@
+{
+  "name": "ROP Trading Academy",
+  "short_name": "ROP Academy",
+  "description": "Trading Journal & Mentor System",
+  "start_url": "/ROP-Trading-Academy.html",
+  "display": "standalone",
+  "background_color": "#070709",
+  "theme_color": "#070709",
+  "orientation": "landscape-primary",
+  "icons": [
+    {
+      "src": "data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 192 192'><rect width='192' height='192' fill='%23070709'/><text x='50%' y='55%' dominant-baseline='middle' text-anchor='middle' font-size='120' font-family='monospace' fill='%23d4a843'>📈</text></svg>",
+      "sizes": "192x192",
+      "type": "image/svg+xml"
+    }
+  ]
+}
