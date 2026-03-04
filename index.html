@@ -1939,7 +1939,23 @@ function StudentView({
       setCsvName("");
       setTradeNotes({});
     }
-  }, "RESETEAZ\u0102"))), /*#__PURE__*/React.createElement("div", {
+  }, "RESETEAZ\u0102"))), err && /*#__PURE__*/React.createElement("div", {
+    style: {
+      color: C.red,
+      fontSize: 11,
+      marginBottom: 16,
+      padding: "10px 14px",
+      background: C.red + "10",
+      border: `1px solid ${C.red}30`
+    }
+  }, err), /*#__PURE__*/React.createElement("div", {
+    style: {
+      display: "grid",
+      gridTemplateColumns: "1fr 1fr",
+      gap: 16,
+      marginBottom: 24
+    }
+  }, /*#__PURE__*/React.createElement("div", {
     onDrop: e => {
       e.preventDefault();
       setDrag(false);
@@ -1954,30 +1970,35 @@ function StudentView({
     style: {
       border: `2px dashed ${drag ? C.gold : C.border}`,
       borderRadius: 4,
-      padding: trades.length > 0 ? "30px 40px" : "60px 40px",
+      padding: "40px 24px",
       textAlign: "center",
       cursor: "pointer",
       background: drag ? C.gold + "05" : C.surface,
       transition: "all .2s",
-      marginBottom: 16
+      display: "flex",
+      flexDirection: "column",
+      alignItems: "center",
+      justifyContent: "center",
+      minHeight: 160
     }
   }, /*#__PURE__*/React.createElement("div", {
     style: {
-      fontSize: trades.length > 0 ? 24 : 36,
-      marginBottom: 8
+      fontSize: 32,
+      marginBottom: 10
     }
   }, "\uD83D\uDCCA"), /*#__PURE__*/React.createElement("div", {
     style: {
       fontSize: 12,
-      color: C.dim,
+      color: C.text,
+      fontWeight: 700,
       marginBottom: 4
     }
-  }, trades.length > 0 ? "+ Adaugă CSV suplimentar" : "Trage CSV-ul sau click"), /*#__PURE__*/React.createElement("div", {
+  }, trades.length > 0 ? "+ Adaugă CSV" : "Importă CSV"), /*#__PURE__*/React.createElement("div", {
     style: {
       fontSize: 10,
-      color: C.dim + "80"
+      color: C.dim
     }
-  }, "TradingView \xB7 Trade Nation \xB7 CSV"), /*#__PURE__*/React.createElement("input", {
+  }, "TradingView \xB7 Trade Nation"), /*#__PURE__*/React.createElement("input", {
     ref: fileRef,
     type: "file",
     accept: ".csv",
@@ -1985,37 +2006,44 @@ function StudentView({
       display: "none"
     },
     onChange: e => e.target.files[0] && processFile(e.target.files[0])
-  })), err && /*#__PURE__*/React.createElement("div", {
-    style: {
-      color: C.red,
-      fontSize: 11,
-      marginBottom: 16,
-      padding: "10px 14px",
-      background: C.red + "10",
-      border: `1px solid ${C.red}30`
-    }
-  }, err), /*#__PURE__*/React.createElement("div", {
-    style: {
-      marginBottom: 28
-    }
-  }, /*#__PURE__*/React.createElement("button", {
+  })), /*#__PURE__*/React.createElement("div", {
     onClick: () => {
       setShowManual(!showManual);
       setErr("");
       setManualTrades([]);
     },
     style: {
-      fontFamily: font,
-      fontSize: 10,
-      letterSpacing: 2,
-      color: showManual ? C.gold : C.dim,
-      background: "none",
-      border: `1px solid ${showManual ? C.gold + "50" : C.border}`,
-      padding: "7px 18px",
-      borderRadius: 2,
-      cursor: "pointer"
+      border: `2px dashed ${showManual ? C.gold : C.border}`,
+      borderRadius: 4,
+      padding: "40px 24px",
+      textAlign: "center",
+      cursor: "pointer",
+      background: showManual ? C.gold + "05" : C.surface,
+      transition: "all .2s",
+      display: "flex",
+      flexDirection: "column",
+      alignItems: "center",
+      justifyContent: "center",
+      minHeight: 160
     }
-  }, showManual ? "✕ ÎNCHIDE INTRODUCERE MANUALĂ" : "✎ INTRODU TRADEURILE MANUAL")), showManual && /*#__PURE__*/React.createElement("div", {
+  }, /*#__PURE__*/React.createElement("div", {
+    style: {
+      fontSize: 32,
+      marginBottom: 10
+    }
+  }, "\u270F\uFE0F"), /*#__PURE__*/React.createElement("div", {
+    style: {
+      fontSize: 12,
+      color: showManual ? C.gold : C.text,
+      fontWeight: 700,
+      marginBottom: 4
+    }
+  }, showManual ? "✕ Închide manual" : "Introdu manual"), /*#__PURE__*/React.createElement("div", {
+    style: {
+      fontSize: 10,
+      color: C.dim
+    }
+  }, "F\u0103r\u0103 CSV \xB7 trade cu trade"))), showManual && /*#__PURE__*/React.createElement("div", {
     style: {
       background: C.surface,
       border: `1px solid ${C.gold}30`,
