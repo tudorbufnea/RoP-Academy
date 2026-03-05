@@ -3845,6 +3845,7 @@ function MentorView({
     alert("Toate datele au fost șterse.");
   };
   const getStudentSummary = name => {
+    var _sessions$, _sessions;
     const d = studentData[name] || {};
     const sessions = d.sessions || [];
     if (!sessions.length) return null;
@@ -3864,6 +3865,44 @@ function MentorView({
       const diff = r.reduce((a, b) => a + b, 0) / r.length - p.reduce((a, b) => a + b, 0) / p.length;
       return diff > 2 ? "↑" : diff < -2 ? "↓" : "→";
     })() : "→";
+    // All trades flat across all sessions
+    const allTrades = sessions.flatMap(s => s.trades || []);
+    const totalTrades = sessions.reduce((s, h) => s + (h.tradeCount || 0), 0);
+    const allWins = sessions.reduce((s, h) => s + (h.stats.wins || 0), 0);
+    const allLosses = sessions.reduce((s, h) => s + (h.stats.losses || 0), 0);
+    const grossProfit = sessions.reduce((s, h) => s + (h.stats.totalPnl > 0 ? h.stats.totalPnl : 0), 0);
+    const grossLoss = sessions.reduce((s, h) => s + (h.stats.totalPnl < 0 ? h.stats.totalPnl : 0), 0);
+    const plRatio = grossLoss !== 0 ? Math.abs(grossProfit / grossLoss) : null;
+    const pctProfSess = totalPnl >= 0 ? sessions.filter(s => s.stats.totalPnl > 0).length / sessions.length * 100 : 0;
+    const avgWin = allWins ? sessions.reduce((s, h) => s + (h.stats.avgWin || 0), 0) / sessions.filter(h => (h.stats.wins || 0) > 0).length : 0;
+    const avgLoss = allLosses ? sessions.reduce((s, h) => s + (h.stats.avgLoss || 0), 0) / sessions.filter(h => (h.stats.losses || 0) > 0).length : 0;
+    const avgRR = sessions.reduce((s, h) => s + (h.stats.rr || 0), 0) / sessions.length;
+    const startAccount = ((_sessions$ = sessions[0]) === null || _sessions$ === void 0 ? void 0 : _sessions$.accountSize) || 0;
+    const lastAccount = ((_sessions = sessions[sessions.length - 1]) === null || _sessions === void 0 || (_sessions = _sessions.stats) === null || _sessions === void 0 ? void 0 : _sessions.accountAfter) || 0;
+    const totalROI = startAccount > 0 ? (lastAccount - startAccount) / startAccount * 100 : null;
+    // Drawdown: worst session pct
+    const maxDD = Math.min(...sessions.map(s => s.stats.accountPct || 0));
+    // Strategies breakdown
+    const strategies = {};
+    sessions.forEach(s => {
+      const tn = s.tradeNotes || {};
+      Object.values(tn).forEach(t => {
+        const strat = (t === null || t === void 0 ? void 0 : t.strategy) || (typeof t === 'string' ? '' : null);
+        if (strat) strategies[strat] = (strategies[strat] || 0) + 1;
+      });
+    });
+    // Weekday performance
+    const weekdayPnl = {};
+    sessions.forEach(s => {
+      const tn = s.tradeNotes || {};
+      (s.trades || []).forEach((t, i) => {
+        var _tn$i;
+        const wd = t.weekday || ((_tn$i = tn[i]) === null || _tn$i === void 0 ? void 0 : _tn$i.weekday);
+        if (wd) {
+          weekdayPnl[wd] = (weekdayPnl[wd] || 0) + (t.pnl || 0);
+        }
+      });
+    });
     return {
       sessions,
       last,
@@ -3873,13 +3912,27 @@ function MentorView({
       pnlCurve,
       lastVerdicts,
       trend,
-      lessonsCompleted: Object.keys(d.lessons || {}).filter(id => d.lessons[id]).length
+      lessonsCompleted: Object.keys(d.lessons || {}).filter(id => d.lessons[id]).length,
+      totalTrades,
+      allWins,
+      allLosses,
+      grossProfit,
+      grossLoss,
+      plRatio,
+      pctProfSess,
+      avgWin,
+      avgLoss,
+      avgRR,
+      startAccount,
+      lastAccount,
+      totalROI,
+      maxDD,
+      strategies,
+      weekdayPnl
     };
   };
   const vc = v => v === "BUNĂ" ? C.green : v === "SLABĂ" ? C.red : C.gold;
   const tc = t => t === "↑" ? C.green : t === "↓" ? C.red : C.gold;
-  const [xlData, setXlData] = useState(() => sGet("mentor_journal") || null);
-  const xlFileRef = useRef();
   if (loading) return /*#__PURE__*/React.createElement("div", {
     style: {
       minHeight: "100vh",
@@ -3903,9 +3956,6 @@ function MentorView({
   }, {
     id: "course",
     label: "📚 Curs"
-  }, {
-    id: "journal",
-    label: "📈 Jurnalul Meu"
   }, {
     id: "settings",
     label: "⚙ Setări"
@@ -4084,25 +4134,25 @@ function MentorView({
       style: {
         padding: "16px 18px"
       }
-    }, /*#__PURE__*/React.createElement("div", {
+    }, sum.startAccount > 0 && /*#__PURE__*/React.createElement("div", {
       style: {
         display: "grid",
         gridTemplateColumns: "1fr 1fr 1fr",
         gap: 8,
-        marginBottom: 16
+        marginBottom: 8
       }
     }, [{
-      label: "WR Mediu",
-      value: `${sum.avgWr.toFixed(1)}%`,
-      color: sum.avgWr >= 50 ? C.green : C.red
+      label: "Cont inițial",
+      value: sum.startAccount.toLocaleString("ro-RO"),
+      color: C.dim
     }, {
-      label: "P&L Total",
-      value: `${sum.totalPnl >= 0 ? "+" : ""}${sum.totalPnl.toFixed(0)}`,
-      color: sum.totalPnl >= 0 ? C.green : C.red
+      label: "Cont curent",
+      value: sum.lastAccount > 0 ? sum.lastAccount.toFixed(0) : "-",
+      color: sum.lastAccount >= sum.startAccount ? C.green : C.red
     }, {
-      label: "Puncte Total",
-      value: `${sum.totalPts >= 0 ? "+" : ""}${sum.totalPts.toFixed(0)}`,
-      color: sum.totalPts >= 0 ? C.green : C.red
+      label: "ROI Total",
+      value: sum.totalROI != null ? `${sum.totalROI >= 0 ? "+" : ""}${sum.totalROI.toFixed(2)}%` : "-",
+      color: sum.totalROI >= 0 ? C.green : C.red
     }].map(m => /*#__PURE__*/React.createElement("div", {
       key: m.label,
       style: {
@@ -4119,11 +4169,216 @@ function MentorView({
       }
     }, m.label), /*#__PURE__*/React.createElement("div", {
       style: {
-        fontSize: 14,
+        fontSize: 13,
         fontWeight: 700,
         color: m.color
       }
     }, m.value)))), /*#__PURE__*/React.createElement("div", {
+      style: {
+        display: "grid",
+        gridTemplateColumns: "1fr 1fr 1fr",
+        gap: 8,
+        marginBottom: 8
+      }
+    }, [{
+      label: "WR Mediu",
+      value: `${sum.avgWr.toFixed(1)}%`,
+      color: sum.avgWr >= 50 ? C.green : C.red
+    }, {
+      label: "P&L Net",
+      value: `${sum.totalPnl >= 0 ? "+" : ""}${sum.totalPnl.toFixed(0)}`,
+      color: sum.totalPnl >= 0 ? C.green : C.red
+    }, {
+      label: "RR Mediu",
+      value: sum.avgRR.toFixed(2),
+      color: sum.avgRR >= 1.5 ? C.green : sum.avgRR >= 1 ? C.gold : C.red
+    }].map(m => /*#__PURE__*/React.createElement("div", {
+      key: m.label,
+      style: {
+        background: C.surface2,
+        padding: "8px 10px",
+        borderRadius: 2
+      }
+    }, /*#__PURE__*/React.createElement("div", {
+      style: {
+        fontSize: 8,
+        color: C.dim,
+        letterSpacing: 1.5,
+        marginBottom: 3
+      }
+    }, m.label), /*#__PURE__*/React.createElement("div", {
+      style: {
+        fontSize: 13,
+        fontWeight: 700,
+        color: m.color
+      }
+    }, m.value)))), /*#__PURE__*/React.createElement("div", {
+      style: {
+        display: "grid",
+        gridTemplateColumns: "1fr 1fr 1fr 1fr",
+        gap: 8,
+        marginBottom: 8
+      }
+    }, [{
+      label: "Tradeuri",
+      value: sum.totalTrades || sum.sessions.reduce((s, h) => s + (h.tradeCount || 0), 0),
+      color: C.gold
+    }, {
+      label: "Câștigate",
+      value: sum.allWins,
+      color: C.green
+    }, {
+      label: "Pierdute",
+      value: sum.allLosses,
+      color: C.red
+    }, {
+      label: "% Profitabile",
+      value: `${sum.pctProfSess.toFixed(0)}%`,
+      color: sum.pctProfSess >= 50 ? C.green : C.red
+    }].map(m => /*#__PURE__*/React.createElement("div", {
+      key: m.label,
+      style: {
+        background: C.surface2,
+        padding: "6px 8px",
+        borderRadius: 2
+      }
+    }, /*#__PURE__*/React.createElement("div", {
+      style: {
+        fontSize: 7,
+        color: C.dim,
+        letterSpacing: 1.5,
+        marginBottom: 2
+      }
+    }, m.label), /*#__PURE__*/React.createElement("div", {
+      style: {
+        fontSize: 12,
+        fontWeight: 700,
+        color: m.color
+      }
+    }, m.value)))), /*#__PURE__*/React.createElement("div", {
+      style: {
+        display: "grid",
+        gridTemplateColumns: "1fr 1fr 1fr",
+        gap: 8,
+        marginBottom: 8
+      }
+    }, [{
+      label: "Profit Brut",
+      value: `+${sum.grossProfit.toFixed(0)}`,
+      color: C.green
+    }, {
+      label: "Pierderi Brute",
+      value: sum.grossLoss.toFixed(0),
+      color: C.red
+    }, {
+      label: "P/L Ratio",
+      value: sum.plRatio ? sum.plRatio.toFixed(2) : "-",
+      color: sum.plRatio && sum.plRatio >= 1 ? C.green : C.red
+    }].map(m => /*#__PURE__*/React.createElement("div", {
+      key: m.label,
+      style: {
+        background: C.surface2,
+        padding: "6px 8px",
+        borderRadius: 2
+      }
+    }, /*#__PURE__*/React.createElement("div", {
+      style: {
+        fontSize: 7,
+        color: C.dim,
+        letterSpacing: 1.5,
+        marginBottom: 2
+      }
+    }, m.label), /*#__PURE__*/React.createElement("div", {
+      style: {
+        fontSize: 12,
+        fontWeight: 700,
+        color: m.color
+      }
+    }, m.value)))), /*#__PURE__*/React.createElement("div", {
+      style: {
+        display: "grid",
+        gridTemplateColumns: "1fr 1fr",
+        gap: 8,
+        marginBottom: 8
+      }
+    }, [{
+      label: "Avg Trade Câștigat",
+      value: sum.avgWin > 0 ? `+${sum.avgWin.toFixed(2)}` : "-",
+      color: C.green
+    }, {
+      label: "Avg Trade Pierdut",
+      value: sum.avgLoss < 0 ? sum.avgLoss.toFixed(2) : "-",
+      color: C.red
+    }].map(m => /*#__PURE__*/React.createElement("div", {
+      key: m.label,
+      style: {
+        background: C.surface2,
+        padding: "6px 8px",
+        borderRadius: 2
+      }
+    }, /*#__PURE__*/React.createElement("div", {
+      style: {
+        fontSize: 7,
+        color: C.dim,
+        letterSpacing: 1.5,
+        marginBottom: 2
+      }
+    }, m.label), /*#__PURE__*/React.createElement("div", {
+      style: {
+        fontSize: 12,
+        fontWeight: 700,
+        color: m.color
+      }
+    }, m.value)))), sum.maxDD < 0 && /*#__PURE__*/React.createElement("div", {
+      style: {
+        background: C.surface2,
+        padding: "6px 10px",
+        borderRadius: 2,
+        marginBottom: 8
+      }
+    }, /*#__PURE__*/React.createElement("div", {
+      style: {
+        fontSize: 7,
+        color: C.dim,
+        letterSpacing: 1.5,
+        marginBottom: 2
+      }
+    }, "MAX DRAWDOWN (cea mai slab\u0103 sesiune)"), /*#__PURE__*/React.createElement("div", {
+      style: {
+        fontSize: 12,
+        fontWeight: 700,
+        color: C.red
+      }
+    }, sum.maxDD.toFixed(2), "%")), Object.keys(sum.strategies).length > 0 && /*#__PURE__*/React.createElement("div", {
+      style: {
+        marginBottom: 8,
+        padding: "8px 10px",
+        background: C.surface2,
+        borderRadius: 2
+      }
+    }, /*#__PURE__*/React.createElement("div", {
+      style: {
+        fontSize: 7,
+        color: C.dim,
+        letterSpacing: 1.5,
+        marginBottom: 6
+      }
+    }, "STRATEGII FOLOSITE"), /*#__PURE__*/React.createElement("div", {
+      style: {
+        display: "flex",
+        gap: 6,
+        flexWrap: "wrap"
+      }
+    }, Object.entries(sum.strategies).sort((a, b) => b[1] - a[1]).map(([s, n]) => /*#__PURE__*/React.createElement("span", {
+      key: s,
+      style: {
+        fontSize: 9,
+        color: C.mentorAccent,
+        padding: "2px 8px",
+        border: `1px solid ${C.mentorAccent}30`,
+        borderRadius: 2
+      }
+    }, s, " (", n, ")")))), /*#__PURE__*/React.createElement("div", {
       style: {
         marginBottom: 12
       }
@@ -4827,11 +5082,7 @@ function MentorView({
       padding: "4px 10px",
       borderRadius: 2
     }
-  }, "\u0218TERGE"))))))), tab === "journal" && /*#__PURE__*/React.createElement(MentorJournalTab, {
-    xlData: xlData,
-    setXlData: setXlData,
-    xlFileRef: xlFileRef
-  }), tab === "settings" && /*#__PURE__*/React.createElement("div", {
+  }, "\u0218TERGE"))))))), tab === "settings" && /*#__PURE__*/React.createElement("div", {
     style: {
       maxWidth: 600
     }
@@ -5827,16 +6078,7 @@ function App() {
     onLogout: () => setUser(null)
   }));
 }
-
-window.onerror = function(msg, src, line, col, err) {
-  document.getElementById("root").innerHTML = '<div style="color:#ff4444;padding:40px;font-family:monospace;font-size:13px;background:#070709;min-height:100vh"><h2 style="color:#ff6666;margin-bottom:20px">⚠ Eroare JavaScript</h2><pre>' + msg + '\nLinia: ' + line + '\n' + (err ? err.stack : '') + '</pre></div>';
-  return false;
-};
-try {
-  ReactDOM.render(/*#__PURE__*/React.createElement(App, null), document.getElementById("root"));
-} catch(e) {
-  document.getElementById("root").innerHTML = '<div style="color:#ff4444;padding:40px;font-family:monospace;font-size:13px;background:#070709;min-height:100vh"><h2 style="color:#ff6666;margin-bottom:20px">⚠ Eroare la render</h2><pre>' + e.stack + '</pre></div>';
-}
+ReactDOM.render(/*#__PURE__*/React.createElement(App, null), document.getElementById("root"));
 
 </script>
 </body>
