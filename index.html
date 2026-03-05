@@ -6,6 +6,7 @@
 <title>ROP Trading Academy</title>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/react/18.2.0/umd/react.production.min.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/react-dom/18.2.0/umd/react-dom.production.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
 <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;700&display=swap" rel="stylesheet"/>
 <style>
   *{box-sizing:border-box;margin:0;padding:0}
@@ -32,7 +33,73 @@ const {
   useCallback
 } = React;
 
-// ─── Config ───────────────────────────────────────────────────────────────────
+// ─── Cloud Sync (JSONBin.io) ──────────────────────────────────────────────────
+const CLOUD_KEY_STORE = "jsonbin_api_key";
+const CLOUD_BIN_STORE = "jsonbin_bin_id";
+async function cloudPush(data) {
+  const key = sGet(CLOUD_KEY_STORE);
+  const bin = sGet(CLOUD_BIN_STORE);
+  if (!key) throw new Error("API key JSONBin lipsă");
+  const url = bin ? `https://api.jsonbin.io/v3/b/${bin}` : "https://api.jsonbin.io/v3/b";
+  const method = bin ? "PUT" : "POST";
+  const headers = {
+    "Content-Type": "application/json",
+    "X-Master-Key": key
+  };
+  if (!bin) headers["X-Bin-Name"] = "ROP-Academy";
+  const res = await fetch(url, {
+    method,
+    headers,
+    body: JSON.stringify(data)
+  });
+  if (!res.ok) throw new Error(`JSONBin error ${res.status}`);
+  const json = await res.json();
+  if (!bin) {
+    var _json$metadata;
+    const id = (_json$metadata = json.metadata) === null || _json$metadata === void 0 ? void 0 : _json$metadata.id;
+    if (id) sSet(CLOUD_BIN_STORE, id);
+  }
+  return json;
+}
+async function cloudPull() {
+  const key = sGet(CLOUD_KEY_STORE);
+  const bin = sGet(CLOUD_BIN_STORE);
+  if (!key || !bin) throw new Error("Cloud nesincronizat — configurează API key.");
+  const res = await fetch(`https://api.jsonbin.io/v3/b/${bin}/latest`, {
+    headers: {
+      "X-Master-Key": key
+    }
+  });
+  if (!res.ok) throw new Error(`JSONBin error ${res.status}`);
+  const json = await res.json();
+  return json.record;
+}
+function gatherAllData() {
+  const roster = sGet("roster") || [];
+  const data = {
+    roster,
+    course: sGet("course"),
+    mentor_journal: sGet("mentor_journal"),
+    _syncedAt: new Date().toISOString()
+  };
+  roster.forEach(name => {
+    const slug = name.toLowerCase().replace(/\s+/g, "_");
+    ["sessions", "account", "objectives"].forEach(k => {
+      const v = sGet(`${k}__${slug}`);
+      if (v !== null) data[`${k}__${slug}`] = v;
+    });
+    const pin = sGet(`pin__${slug}`);
+    if (pin) data[`pin__${slug}`] = pin;
+  });
+  return data;
+}
+function restoreAllData(data) {
+  Object.entries(data).forEach(([k, v]) => {
+    if (k !== "__syncedAt") sSet(k, v);
+  });
+}
+
+// ─── Config ─────────────────────────────────────────────────────────────────
 const DEFAULT_PASS = "mentor2025";
 function getMentorPass() {
   return sGet("mentor_pass") || DEFAULT_PASS;
@@ -256,7 +323,16 @@ async function fetchAIAnalysis(trades, stats, history, notes, objectives, accoun
   if (!apiKey) throw new Error("API key lipsă. Mentorul trebuie să configureze cheia în Setări → Mentor.");
   const histCtx = history.length > 0 ? history.slice(-5).map((s, i) => `Ses.${i + 1}(${s.date}): WR ${s.stats.winRate.toFixed(1)}%, P&L ${s.stats.totalPnl.toFixed(2)}, Pct ${(s.stats.totalPoints || 0) >= 0 ? "+" : ""}${(s.stats.totalPoints || 0).toFixed(1)}, RR ${s.stats.rr.toFixed(2)}`).join("\n") : "Prima sesiune.";
   const prompt = `Ești un trading coach profesionist pentru indici (US30, NAS100). Analizează strict datele.
-TRADEURI:\n${trades.map((t, i) => `${i + 1}. ${t.symbol}|${t.side}|${t.entryPrice}→${t.exitPrice}|Pct:${t.points >= 0 ? "+" : ""}${t.points.toFixed(1)}|P&L:${t.pnl.toFixed(2)}|${t.win ? "WIN" : "LOSS"}${tradeNotes && tradeNotes[i] ? "|NOTA: " + tradeNotes[i] : ""}`).join("\n")}
+TRADEURI:\n${trades.map((t, i) => {
+    const tn = tradeNotes && tradeNotes[i];
+    const strat = (tn === null || tn === void 0 ? void 0 : tn.strategy) || t.strategy || "";
+    const risk = ((tn === null || tn === void 0 ? void 0 : tn.riskPct) != null ? tn.riskPct : t.riskPct) || "";
+    const note = (tn === null || tn === void 0 ? void 0 : tn.note) || (typeof tn === "string" ? tn : "") || "";
+    const pl2 = ((tn === null || tn === void 0 ? void 0 : tn.pl2) != null ? tn.pl2 : t.pl2) || "";
+    const pl3 = ((tn === null || tn === void 0 ? void 0 : tn.pl3) != null ? tn.pl3 : t.pl3) || "";
+    const wd = t.weekday || "";
+    return `${i + 1}. ${t.symbol}|${t.side}|${t.entryPrice}→${t.exitPrice}|Pct:${t.points >= 0 ? "+" : ""}${t.points.toFixed(1)}|P&L:${t.pnl.toFixed(2)}|${t.win ? "WIN" : "LOSS"}${strat ? "|Strategie:" + strat : ""}${risk ? "|Risk:" + risk + "%" : ""}${pl2 ? "|PL2:" + pl2 : ""}${pl3 ? "|PL3:" + pl3 : ""}${wd ? "|Ziua:" + wd : ""}${note ? "|Nota:" + note : ""}`;
+  }).join("\n")}
 STATISTICI: WR ${stats.winRate.toFixed(1)}%, Puncte ${stats.totalPoints >= 0 ? "+" : ""}${stats.totalPoints.toFixed(1)}, P&L ${stats.totalPnl.toFixed(2)}, RR ${stats.rr.toFixed(2)}, ${stats.wins}W/${stats.losses}L
 ${accountSize > 0 ? `Cont: ${accountSize}→${(_stats$accountAfter = stats.accountAfter) === null || _stats$accountAfter === void 0 ? void 0 : _stats$accountAfter.toFixed(2)} (${stats.accountPct >= 0 ? "+" : ""}${(_stats$accountPct = stats.accountPct) === null || _stats$accountPct === void 0 ? void 0 : _stats$accountPct.toFixed(2)}%)` : ""}
 ISTORIC:\n${histCtx}
@@ -1239,28 +1315,70 @@ function StudentHistoryTab({
         letterSpacing: 2,
         marginBottom: 12
       }
-    }, "NOTE PER TRADE"), Object.entries(sess.tradeNotes).map(([idx, note]) => note ? /*#__PURE__*/React.createElement("div", {
-      key: idx,
-      style: {
-        padding: "8px 12px",
-        borderLeft: `3px solid ${C.gold}40`,
-        marginBottom: 8,
-        background: C.surface2
-      }
-    }, /*#__PURE__*/React.createElement("div", {
-      style: {
-        fontSize: 9,
-        color: C.gold + "80",
-        letterSpacing: 1,
-        marginBottom: 4
-      }
-    }, "TRADE #", parseInt(idx) + 1), /*#__PURE__*/React.createElement("div", {
-      style: {
-        fontSize: 11,
-        color: C.text,
-        lineHeight: 1.6
-      }
-    }, note)) : null)), /*#__PURE__*/React.createElement("div", {
+    }, "DETALII PER TRADE"), Object.entries(sess.tradeNotes).map(([idx, tn]) => tn ? (_sess$trades => {
+      const strat = (tn === null || tn === void 0 ? void 0 : tn.strategy) || (typeof tn === "string" ? "" : null);
+      const risk = tn === null || tn === void 0 ? void 0 : tn.riskPct;
+      const pl2 = tn === null || tn === void 0 ? void 0 : tn.pl2;
+      const pl3 = tn === null || tn === void 0 ? void 0 : tn.pl3;
+      const note = (tn === null || tn === void 0 ? void 0 : tn.note) || (typeof tn === "string" ? tn : "");
+      const t = (_sess$trades = sess.trades) === null || _sess$trades === void 0 ? void 0 : _sess$trades[parseInt(idx)];
+      const wd = (t === null || t === void 0 ? void 0 : t.weekday) || "";
+      if (!strat && !risk && !pl2 && !pl3 && !note && !wd) return null;
+      return /*#__PURE__*/React.createElement("div", {
+        key: idx,
+        style: {
+          padding: "10px 14px",
+          borderLeft: `3px solid ${C.gold}40`,
+          marginBottom: 8,
+          background: C.surface2
+        }
+      }, /*#__PURE__*/React.createElement("div", {
+        style: {
+          fontSize: 9,
+          color: C.gold + "80",
+          letterSpacing: 1,
+          marginBottom: 6
+        }
+      }, "TRADE #", parseInt(idx) + 1, wd && /*#__PURE__*/React.createElement("span", {
+        style: {
+          color: C.dim,
+          marginLeft: 8
+        }
+      }, "\xB7 ", wd)), /*#__PURE__*/React.createElement("div", {
+        style: {
+          display: "flex",
+          gap: 16,
+          flexWrap: "wrap",
+          marginBottom: note ? 8 : 0
+        }
+      }, strat && /*#__PURE__*/React.createElement("span", {
+        style: {
+          fontSize: 11,
+          color: C.mentorAccent
+        }
+      }, "\uD83D\uDCCC ", strat), risk && /*#__PURE__*/React.createElement("span", {
+        style: {
+          fontSize: 11,
+          color: C.gold
+        }
+      }, "\u26A1 Risk: ", risk, "%"), pl2 && /*#__PURE__*/React.createElement("span", {
+        style: {
+          fontSize: 11,
+          color: parseFloat(pl2) >= 0 ? C.green : C.red
+        }
+      }, "T2: ", parseFloat(pl2) >= 0 ? "+" : "", parseFloat(pl2).toFixed(2)), pl3 && /*#__PURE__*/React.createElement("span", {
+        style: {
+          fontSize: 11,
+          color: parseFloat(pl3) >= 0 ? C.green : C.red
+        }
+      }, "T3: ", parseFloat(pl3) >= 0 ? "+" : "", parseFloat(pl3).toFixed(2))), note && /*#__PURE__*/React.createElement("div", {
+        style: {
+          fontSize: 11,
+          color: C.text,
+          lineHeight: 1.6
+        }
+      }, note));
+    })() : null)), /*#__PURE__*/React.createElement("div", {
       style: {
         display: "flex",
         gap: 12
@@ -1565,7 +1683,11 @@ function StudentView({
     side: "BUY",
     entryPrice: "",
     exitPrice: "",
-    qty: "0.1"
+    qty: "0.1",
+    strategy: "",
+    riskPct: "",
+    pl2: "",
+    pl3: ""
   });
   const fileRef = useRef();
   const slug = user.name.toLowerCase().replace(/\s+/g, "_");
@@ -1632,6 +1754,8 @@ function StudentView({
     setErr("");
     const pnl = manualDraft.side === "BUY" ? (xp - ep) * qty : (ep - xp) * qty;
     const points = manualDraft.side === "BUY" ? xp - ep : ep - xp;
+    const weekdays = ['Duminică', 'Luni', 'Marți', 'Miercuri', 'Joi', 'Vineri', 'Sâmbătă'];
+    const weekday = weekdays[new Date().getDay()];
     const t = {
       symbol: manualDraft.symbol.toUpperCase() || "US30",
       side: manualDraft.side,
@@ -1642,7 +1766,12 @@ function StudentView({
       points,
       win: pnl > 0,
       entryTime: "",
-      exitTime: ""
+      exitTime: "",
+      strategy: manualDraft.strategy || "",
+      riskPct: parseFloat(manualDraft.riskPct) || null,
+      pl2: parseFloat(manualDraft.pl2) || null,
+      pl3: parseFloat(manualDraft.pl3) || null,
+      weekday
     };
     setManualTrades(prev => [...prev, t]);
     setManualDraft(d => ({
@@ -2166,7 +2295,73 @@ function StudentView({
     variant: "primary",
     small: true,
     onClick: addManualTrade
-  }, "+ ADAUG\u0102"))), manualDraft.entryPrice && manualDraft.exitPrice && (() => {
+  }, "+ ADAUG\u0102"))), /*#__PURE__*/React.createElement("div", {
+    style: {
+      display: "grid",
+      gridTemplateColumns: "2fr 1fr 1fr 1fr",
+      gap: 10,
+      marginBottom: 16
+    }
+  }, /*#__PURE__*/React.createElement("div", null, /*#__PURE__*/React.createElement("div", {
+    style: {
+      fontSize: 9,
+      color: C.dim,
+      letterSpacing: 2,
+      marginBottom: 6
+    }
+  }, "STRATEGIE"), /*#__PURE__*/React.createElement(Input, {
+    value: manualDraft.strategy,
+    onChange: v => setManualDraft(d => ({
+      ...d,
+      strategy: v
+    })),
+    placeholder: "ex: Breakout, Supply/Demand..."
+  })), /*#__PURE__*/React.createElement("div", null, /*#__PURE__*/React.createElement("div", {
+    style: {
+      fontSize: 9,
+      color: C.dim,
+      letterSpacing: 2,
+      marginBottom: 6
+    }
+  }, "RISK % CONT"), /*#__PURE__*/React.createElement(Input, {
+    value: manualDraft.riskPct,
+    onChange: v => setManualDraft(d => ({
+      ...d,
+      riskPct: v
+    })),
+    placeholder: "ex: 1.5",
+    type: "number"
+  })), /*#__PURE__*/React.createElement("div", null, /*#__PURE__*/React.createElement("div", {
+    style: {
+      fontSize: 9,
+      color: C.dim,
+      letterSpacing: 2,
+      marginBottom: 6
+    }
+  }, "P/L IE\u0218IRE 2 ($)"), /*#__PURE__*/React.createElement(Input, {
+    value: manualDraft.pl2,
+    onChange: v => setManualDraft(d => ({
+      ...d,
+      pl2: v
+    })),
+    placeholder: "op\u021Bional",
+    type: "number"
+  })), /*#__PURE__*/React.createElement("div", null, /*#__PURE__*/React.createElement("div", {
+    style: {
+      fontSize: 9,
+      color: C.dim,
+      letterSpacing: 2,
+      marginBottom: 6
+    }
+  }, "P/L IE\u0218IRE 3 ($)"), /*#__PURE__*/React.createElement(Input, {
+    value: manualDraft.pl3,
+    onChange: v => setManualDraft(d => ({
+      ...d,
+      pl3: v
+    })),
+    placeholder: "op\u021Bional",
+    type: "number"
+  }))), manualDraft.entryPrice && manualDraft.exitPrice && (() => {
     const ep = parseFloat(manualDraft.entryPrice),
       xp = parseFloat(manualDraft.exitPrice),
       qty = parseFloat(manualDraft.qty) || 0.1;
@@ -2221,7 +2416,22 @@ function StudentView({
     style: {
       color: C.dim
     }
-  }, t.entryPrice, " \u2192 ", t.exitPrice, " \xD7 ", t.qty)), /*#__PURE__*/React.createElement("div", {
+  }, t.entryPrice, " \u2192 ", t.exitPrice, " \xD7 ", t.qty), t.strategy && /*#__PURE__*/React.createElement("span", {
+    style: {
+      fontSize: 10,
+      color: C.mentorAccent + "90"
+    }
+  }, t.strategy), t.riskPct && /*#__PURE__*/React.createElement("span", {
+    style: {
+      fontSize: 10,
+      color: C.gold + "80"
+    }
+  }, t.riskPct, "%R"), t.weekday && /*#__PURE__*/React.createElement("span", {
+    style: {
+      fontSize: 10,
+      color: C.dim + "70"
+    }
+  }, t.weekday)), /*#__PURE__*/React.createElement("div", {
     style: {
       display: "flex",
       gap: 12,
@@ -2467,111 +2677,257 @@ function StudentView({
     style: {
       marginBottom: 20
     }
-  }, /*#__PURE__*/React.createElement(SectionTitle, null, "Tradeuri detectate"), trades.map((t, i) => /*#__PURE__*/React.createElement("div", {
-    key: i,
-    style: {
-      marginBottom: 4
-    }
-  }, /*#__PURE__*/React.createElement("div", {
-    style: {
-      display: "flex",
-      justifyContent: "space-between",
-      alignItems: "center",
-      padding: "9px 14px",
-      background: C.surface,
-      borderLeft: `3px solid ${t.win ? C.green : C.red}`,
-      fontSize: 11,
-      cursor: "pointer"
-    },
-    onClick: () => setExpandedTrade(expandedTrade === i ? null : i)
-  }, /*#__PURE__*/React.createElement("div", {
-    style: {
-      display: "flex",
-      gap: 12,
-      alignItems: "center"
-    }
-  }, /*#__PURE__*/React.createElement("span", {
-    style: {
-      color: C.gold,
-      fontWeight: 700,
-      minWidth: 70
-    }
-  }, t.symbol), /*#__PURE__*/React.createElement(Badge, {
-    label: t.side,
-    color: t.side === "BUY" ? C.green : C.red
-  }), tradeNotes[i] && /*#__PURE__*/React.createElement("span", {
-    style: {
-      fontSize: 9,
-      color: C.gold + "80",
-      letterSpacing: 1
-    }
-  }, "\uD83D\uDCDD")), /*#__PURE__*/React.createElement("div", {
-    style: {
-      display: "flex",
-      gap: 16,
-      color: C.dim,
-      alignItems: "center"
-    }
-  }, /*#__PURE__*/React.createElement("span", null, t.entryPrice, " \u2192 ", t.exitPrice), /*#__PURE__*/React.createElement("span", {
-    style: {
-      color: t.points >= 0 ? C.green + "90" : C.red + "90",
-      minWidth: 70,
-      textAlign: "right"
-    }
-  }, t.points >= 0 ? "+" : "", t.points.toFixed(1), " pct"), /*#__PURE__*/React.createElement("span", {
-    style: {
-      color: t.win ? C.green : C.red,
-      fontWeight: 700,
-      minWidth: 60,
-      textAlign: "right"
-    }
-  }, t.pnl >= 0 ? "+" : "", t.pnl.toFixed(2)), /*#__PURE__*/React.createElement("span", {
-    style: {
-      fontSize: 11,
-      fontWeight: 700,
-      letterSpacing: 1,
-      padding: "3px 10px",
-      borderRadius: 2,
-      background: expandedTrade === i ? C.gold + "25" : C.gold + "12",
-      color: expandedTrade === i ? C.gold : C.gold + "90",
-      border: `1px solid ${expandedTrade === i ? C.gold + "80" : C.gold + "30"}`
-    }
-  }, expandedTrade === i ? "✕ NOTĂ" : "+ NOTĂ"))), expandedTrade === i && /*#__PURE__*/React.createElement("div", {
-    style: {
-      padding: "10px 14px",
-      background: C.surface2,
-      borderLeft: `3px solid ${C.gold}40`,
-      borderTop: `1px solid ${C.border}`
-    }
-  }, /*#__PURE__*/React.createElement("div", {
-    style: {
-      fontSize: 9,
-      color: C.dim,
-      letterSpacing: 2,
-      marginBottom: 6
-    }
-  }, "NOT\u0102 TRADE #", i + 1), /*#__PURE__*/React.createElement("textarea", {
-    value: tradeNotes[i] || "",
-    onChange: e => setTradeNotes(p => ({
-      ...p,
-      [i]: e.target.value
-    })),
-    placeholder: "De ce ai intrat? Setup-ul? Erori? Emo\u021Bii...",
-    style: {
-      width: "100%",
-      background: "transparent",
-      border: `1px solid ${C.border}`,
-      color: C.text,
-      fontFamily: font,
-      fontSize: 11,
-      padding: "8px 12px",
-      resize: "vertical",
-      minHeight: 60,
-      outline: "none",
-      lineHeight: 1.6,
-      boxSizing: "border-box"
-    }
-  }))))), /*#__PURE__*/React.createElement("div", {
+  }, /*#__PURE__*/React.createElement(SectionTitle, null, "Tradeuri detectate"), trades.map((t, i) => {
+    var _tradeNotes$i, _tradeNotes$i2, _tradeNotes$i3, _tradeNotes$i4, _tradeNotes$i5;
+    return /*#__PURE__*/React.createElement("div", {
+      key: i,
+      style: {
+        marginBottom: 4
+      }
+    }, /*#__PURE__*/React.createElement("div", {
+      style: {
+        display: "flex",
+        justifyContent: "space-between",
+        alignItems: "center",
+        padding: "9px 14px",
+        background: C.surface,
+        borderLeft: `3px solid ${t.win ? C.green : C.red}`,
+        fontSize: 11,
+        cursor: "pointer"
+      },
+      onClick: () => setExpandedTrade(expandedTrade === i ? null : i)
+    }, /*#__PURE__*/React.createElement("div", {
+      style: {
+        display: "flex",
+        gap: 12,
+        alignItems: "center"
+      }
+    }, /*#__PURE__*/React.createElement("span", {
+      style: {
+        color: C.gold,
+        fontWeight: 700,
+        minWidth: 70
+      }
+    }, t.symbol), /*#__PURE__*/React.createElement(Badge, {
+      label: t.side,
+      color: t.side === "BUY" ? C.green : C.red
+    }), tradeNotes[i] && /*#__PURE__*/React.createElement("span", {
+      style: {
+        fontSize: 9,
+        color: C.gold + "80",
+        letterSpacing: 1
+      }
+    }, "\uD83D\uDCDD")), /*#__PURE__*/React.createElement("div", {
+      style: {
+        display: "flex",
+        gap: 16,
+        color: C.dim,
+        alignItems: "center"
+      }
+    }, /*#__PURE__*/React.createElement("span", null, t.entryPrice, " \u2192 ", t.exitPrice), /*#__PURE__*/React.createElement("span", {
+      style: {
+        color: t.points >= 0 ? C.green + "90" : C.red + "90",
+        minWidth: 70,
+        textAlign: "right"
+      }
+    }, t.points >= 0 ? "+" : "", t.points.toFixed(1), " pct"), /*#__PURE__*/React.createElement("span", {
+      style: {
+        color: t.win ? C.green : C.red,
+        fontWeight: 700,
+        minWidth: 60,
+        textAlign: "right"
+      }
+    }, t.pnl >= 0 ? "+" : "", t.pnl.toFixed(2)), /*#__PURE__*/React.createElement("span", {
+      style: {
+        fontSize: 11,
+        fontWeight: 700,
+        letterSpacing: 1,
+        padding: "3px 10px",
+        borderRadius: 2,
+        background: expandedTrade === i ? C.gold + "25" : C.gold + "12",
+        color: expandedTrade === i ? C.gold : C.gold + "90",
+        border: `1px solid ${expandedTrade === i ? C.gold + "80" : C.gold + "30"}`
+      }
+    }, expandedTrade === i ? "✕ NOTĂ" : "+ NOTĂ"))), expandedTrade === i && /*#__PURE__*/React.createElement("div", {
+      style: {
+        padding: "14px",
+        background: C.surface2,
+        borderLeft: `3px solid ${C.gold}40`,
+        borderTop: `1px solid ${C.border}`
+      }
+    }, /*#__PURE__*/React.createElement("div", {
+      style: {
+        display: "grid",
+        gridTemplateColumns: "2fr 1fr 1fr 1fr",
+        gap: 10,
+        marginBottom: 12
+      }
+    }, /*#__PURE__*/React.createElement("div", null, /*#__PURE__*/React.createElement("div", {
+      style: {
+        fontSize: 9,
+        color: C.dim,
+        letterSpacing: 2,
+        marginBottom: 5
+      }
+    }, "STRATEGIE"), /*#__PURE__*/React.createElement("input", {
+      value: ((_tradeNotes$i = tradeNotes[i]) === null || _tradeNotes$i === void 0 ? void 0 : _tradeNotes$i.strategy) || t.strategy || "",
+      onChange: e => setTradeNotes(p => ({
+        ...p,
+        [i]: {
+          ...(p[i] || {}),
+          strategy: e.target.value
+        }
+      })),
+      placeholder: "ex: Breakout, Supply/Demand...",
+      style: {
+        width: "100%",
+        background: "transparent",
+        border: `1px solid ${C.border}`,
+        color: C.text,
+        fontFamily: font,
+        fontSize: 11,
+        padding: "8px 10px",
+        outline: "none",
+        boxSizing: "border-box",
+        borderRadius: 2
+      }
+    })), /*#__PURE__*/React.createElement("div", null, /*#__PURE__*/React.createElement("div", {
+      style: {
+        fontSize: 9,
+        color: C.dim,
+        letterSpacing: 2,
+        marginBottom: 5
+      }
+    }, "RISK % CONT"), /*#__PURE__*/React.createElement("input", {
+      value: ((_tradeNotes$i2 = tradeNotes[i]) === null || _tradeNotes$i2 === void 0 ? void 0 : _tradeNotes$i2.riskPct) != null ? tradeNotes[i].riskPct : t.riskPct || "",
+      onChange: e => setTradeNotes(p => ({
+        ...p,
+        [i]: {
+          ...(p[i] || {}),
+          riskPct: e.target.value
+        }
+      })),
+      placeholder: "ex: 1.5",
+      type: "number",
+      style: {
+        width: "100%",
+        background: "transparent",
+        border: `1px solid ${C.border}`,
+        color: C.text,
+        fontFamily: font,
+        fontSize: 11,
+        padding: "8px 10px",
+        outline: "none",
+        boxSizing: "border-box",
+        borderRadius: 2
+      }
+    })), /*#__PURE__*/React.createElement("div", null, /*#__PURE__*/React.createElement("div", {
+      style: {
+        fontSize: 9,
+        color: C.dim,
+        letterSpacing: 2,
+        marginBottom: 5
+      }
+    }, "P/L IE\u0218IRE 2 ($)"), /*#__PURE__*/React.createElement("input", {
+      value: ((_tradeNotes$i3 = tradeNotes[i]) === null || _tradeNotes$i3 === void 0 ? void 0 : _tradeNotes$i3.pl2) != null ? tradeNotes[i].pl2 : t.pl2 || "",
+      onChange: e => setTradeNotes(p => ({
+        ...p,
+        [i]: {
+          ...(p[i] || {}),
+          pl2: e.target.value
+        }
+      })),
+      placeholder: "op\u021Bional",
+      type: "number",
+      style: {
+        width: "100%",
+        background: "transparent",
+        border: `1px solid ${C.border}`,
+        color: C.text,
+        fontFamily: font,
+        fontSize: 11,
+        padding: "8px 10px",
+        outline: "none",
+        boxSizing: "border-box",
+        borderRadius: 2
+      }
+    })), /*#__PURE__*/React.createElement("div", null, /*#__PURE__*/React.createElement("div", {
+      style: {
+        fontSize: 9,
+        color: C.dim,
+        letterSpacing: 2,
+        marginBottom: 5
+      }
+    }, "P/L IE\u0218IRE 3 ($)"), /*#__PURE__*/React.createElement("input", {
+      value: ((_tradeNotes$i4 = tradeNotes[i]) === null || _tradeNotes$i4 === void 0 ? void 0 : _tradeNotes$i4.pl3) != null ? tradeNotes[i].pl3 : t.pl3 || "",
+      onChange: e => setTradeNotes(p => ({
+        ...p,
+        [i]: {
+          ...(p[i] || {}),
+          pl3: e.target.value
+        }
+      })),
+      placeholder: "op\u021Bional",
+      type: "number",
+      style: {
+        width: "100%",
+        background: "transparent",
+        border: `1px solid ${C.border}`,
+        color: C.text,
+        fontFamily: font,
+        fontSize: 11,
+        padding: "8px 10px",
+        outline: "none",
+        boxSizing: "border-box",
+        borderRadius: 2
+      }
+    }))), /*#__PURE__*/React.createElement("div", {
+      style: {
+        fontSize: 9,
+        color: C.dim,
+        letterSpacing: 2,
+        marginBottom: 5
+      }
+    }, "NOT\u0102 LIBER\u0102"), /*#__PURE__*/React.createElement("textarea", {
+      value: ((_tradeNotes$i5 = tradeNotes[i]) === null || _tradeNotes$i5 === void 0 ? void 0 : _tradeNotes$i5.note) || tradeNotes[i] || "",
+      onChange: e => setTradeNotes(p => ({
+        ...p,
+        [i]: {
+          ...(typeof p[i] === "object" ? p[i] : {}),
+          note: e.target.value
+        }
+      })),
+      placeholder: "De ce ai intrat? Setup-ul? Erori? Emo\u021Bii...",
+      style: {
+        width: "100%",
+        background: "transparent",
+        border: `1px solid ${C.border}`,
+        color: C.text,
+        fontFamily: font,
+        fontSize: 11,
+        padding: "8px 12px",
+        resize: "vertical",
+        minHeight: 50,
+        outline: "none",
+        lineHeight: 1.6,
+        boxSizing: "border-box"
+      }
+    }), (() => {
+      const weekdays = ['Duminică', 'Luni', 'Marți', 'Miercuri', 'Joi', 'Vineri', 'Sâmbătă'];
+      const wd = t.weekday || weekdays[new Date().getDay()];
+      return /*#__PURE__*/React.createElement("div", {
+        style: {
+          marginTop: 8,
+          fontSize: 10,
+          color: C.dim
+        }
+      }, "\uD83D\uDCC5 Ziua: ", /*#__PURE__*/React.createElement("span", {
+        style: {
+          color: C.gold
+        }
+      }, wd));
+    })()));
+  })), /*#__PURE__*/React.createElement("div", {
     style: {
       marginBottom: 20
     }
@@ -3518,6 +3874,8 @@ function MentorView({
   }));
   const selData = selected ? studentData[selected] || {} : {};
   const selSessions = selData.sessions || [];
+  const [xlData, setXlData] = useState(() => sGet("mentor_journal") || null);
+  const xlFileRef = useRef();
   const tabs = [{
     id: "dashboard",
     label: "📊 Dashboard"
@@ -3528,6 +3886,9 @@ function MentorView({
   }, {
     id: "course",
     label: "📚 Curs"
+  }, {
+    id: "journal",
+    label: "📈 Jurnalul Meu"
   }, {
     id: "settings",
     label: "⚙ Setări"
@@ -4449,7 +4810,11 @@ function MentorView({
       padding: "4px 10px",
       borderRadius: 2
     }
-  }, "\u0218TERGE"))))))), tab === "settings" && /*#__PURE__*/React.createElement("div", {
+  }, "\u0218TERGE"))))))), tab === "journal" && /*#__PURE__*/React.createElement(MentorJournalTab, {
+    xlData: xlData,
+    setXlData: setXlData,
+    xlFileRef: xlFileRef
+  }), tab === "settings" && /*#__PURE__*/React.createElement("div", {
     style: {
       maxWidth: 600
     }
@@ -4464,7 +4829,7 @@ function MentorView({
       color: C.text,
       marginBottom: 6
     }
-  }, "Set\u0103ri")), /*#__PURE__*/React.createElement(PasswordManager, null), /*#__PURE__*/React.createElement(ApiKeyManager, null), /*#__PURE__*/React.createElement("div", {
+  }, "Set\u0103ri")), /*#__PURE__*/React.createElement(CloudSyncManager, null), /*#__PURE__*/React.createElement(PasswordManager, null), /*#__PURE__*/React.createElement(ApiKeyManager, null), /*#__PURE__*/React.createElement("div", {
     style: {
       background: C.surface,
       border: `1px solid ${C.border}`,
@@ -4745,6 +5110,656 @@ function MentorView({
 }
 
 // ─── Root ─────────────────────────────────────────────────────────────────────
+
+// ─── Mentor Journal Tab (Excel Import) ───────────────────────────────────────
+function MentorJournalTab({
+  xlData,
+  setXlData,
+  xlFileRef
+}) {
+  const [loading, setLoading] = useState(false);
+  const [err, setErr] = useState("");
+  const parseExcel = async file => {
+    setLoading(true);
+    setErr("");
+    try {
+      const buf = await file.arrayBuffer();
+      const uint = new Uint8Array(buf);
+      // Use SheetJS loaded via CDN
+      const wb = XLSX.read(uint, {
+        type: "array",
+        cellDates: true
+      });
+      const ws = wb.Sheets["Trades"];
+      if (!ws) {
+        setErr("Sheet 'Trades' negăsit în fișier.");
+        setLoading(false);
+        return;
+      }
+      const raw = XLSX.utils.sheet_to_json(ws, {
+        header: 1,
+        raw: false,
+        defval: ""
+      });
+      // Header row is row index 7 (row 8 in Excel)
+      // Data starts at row index 8
+      const trades = [];
+      for (let i = 8; i < raw.length; i++) {
+        const r = raw[i];
+        const no = r[1];
+        if (!no || isNaN(parseFloat(no))) continue;
+        const pl = parseFloat(r[15]) || 0;
+        const cum = parseFloat(r[36]) || null;
+        const roi = parseFloat(r[37]) || null;
+        const dd = parseFloat(r[38]) || 0;
+        const win = r[42] === "1" || parseFloat(r[42]) === 1;
+        const loss = r[43] === "1" || parseFloat(r[43]) === 1;
+        const mkt = r[2] || "";
+        const typ = r[3] || "";
+        const strat = r[4] || "";
+        const entD = r[5] || "";
+        const comment = r[20] || "";
+        if (cum !== null) {
+          trades.push({
+            no: parseFloat(no),
+            market: mkt,
+            type: typ,
+            strategy: strat,
+            entry: entD,
+            pl,
+            cum,
+            roi,
+            dd,
+            win,
+            loss,
+            comment
+          });
+        }
+      }
+      if (!trades.length) {
+        setErr("Nu s-au găsit tradeuri cu date în fișier.");
+        setLoading(false);
+        return;
+      }
+
+      // Summary stats
+      const realTrades = trades.filter(t => t.pl !== 0);
+      const winners = realTrades.filter(t => t.win || t.pl > 0);
+      const losers = realTrades.filter(t => t.loss || t.pl < 0);
+      const totalPL = realTrades.reduce((s, t) => s + t.pl, 0);
+      const startBal = trades[0].cum - trades[0].pl;
+      const endBal = trades[trades.length - 1].cum;
+      const maxDD = Math.min(...trades.map(t => t.dd || 0));
+      const equityCurve = trades.map(t => t.cum);
+      const roiArr = trades.map(t => (t.roi || 0) * 100);
+      const markets = {};
+      realTrades.forEach(t => {
+        if (t.market) markets[t.market] = (markets[t.market] || 0) + 1;
+      });
+      const strategies = {};
+      realTrades.forEach(t => {
+        if (t.strategy) strategies[t.strategy] = (strategies[t.strategy] || 0) + 1;
+      });
+      const data = {
+        trades,
+        equityCurve,
+        roiArr,
+        stats: {
+          totalTrades: realTrades.length,
+          winners: winners.length,
+          losers: losers.length,
+          winRate: realTrades.length ? winners.length / realTrades.length * 100 : 0,
+          totalPL,
+          startBal,
+          endBal,
+          roi: startBal ? (endBal - startBal) / startBal * 100 : 0,
+          maxDD: maxDD * 100,
+          markets,
+          strategies,
+          avgWin: winners.length ? winners.reduce((s, t) => s + t.pl, 0) / winners.length : 0,
+          avgLoss: losers.length ? losers.reduce((s, t) => s + t.pl, 0) / losers.length : 0
+        },
+        fileName: file.name,
+        importedAt: new Date().toLocaleDateString("ro-RO")
+      };
+      setXlData(data);
+      sSet("mentor_journal", data);
+    } catch (e) {
+      setErr("Eroare la parsare: " + e.message);
+    }
+    setLoading(false);
+  };
+  if (!xlData) return /*#__PURE__*/React.createElement("div", null, /*#__PURE__*/React.createElement("div", {
+    style: {
+      fontSize: 18,
+      fontWeight: 700,
+      color: C.text,
+      marginBottom: 8
+    }
+  }, "Jurnalul Meu"), /*#__PURE__*/React.createElement("div", {
+    style: {
+      fontSize: 12,
+      color: C.dim,
+      marginBottom: 32
+    }
+  }, "Import\u0103 fi\u0219ierul t\u0103u Excel de trading pentru a vedea statisticile globale."), /*#__PURE__*/React.createElement("div", {
+    onClick: () => xlFileRef.current.click(),
+    style: {
+      border: `2px dashed ${C.mentorAccent}50`,
+      borderRadius: 4,
+      padding: "60px 40px",
+      textAlign: "center",
+      cursor: "pointer",
+      background: C.surface,
+      maxWidth: 500
+    }
+  }, /*#__PURE__*/React.createElement("div", {
+    style: {
+      fontSize: 36,
+      marginBottom: 12
+    }
+  }, "\uD83D\uDCCA"), /*#__PURE__*/React.createElement("div", {
+    style: {
+      fontSize: 13,
+      color: C.text,
+      fontWeight: 700,
+      marginBottom: 6
+    }
+  }, "Import\u0103 Trade Journal Excel"), /*#__PURE__*/React.createElement("div", {
+    style: {
+      fontSize: 11,
+      color: C.dim
+    }
+  }, "Format: Trade-Journal_for_Scalping.xlsx"), /*#__PURE__*/React.createElement("input", {
+    ref: xlFileRef,
+    type: "file",
+    accept: ".xlsx,.xls",
+    style: {
+      display: "none"
+    },
+    onChange: e => e.target.files[0] && parseExcel(e.target.files[0])
+  })), loading && /*#__PURE__*/React.createElement("div", {
+    style: {
+      marginTop: 20,
+      color: C.dim,
+      fontSize: 12
+    }
+  }, "Se proceseaz\u0103..."), err && /*#__PURE__*/React.createElement("div", {
+    style: {
+      marginTop: 16,
+      color: C.red,
+      fontSize: 11,
+      padding: "10px 14px",
+      background: C.red + "10",
+      border: `1px solid ${C.red}30`
+    }
+  }, err));
+  const s = xlData.stats;
+  const eq = xlData.equityCurve || [];
+  return /*#__PURE__*/React.createElement("div", null, /*#__PURE__*/React.createElement("div", {
+    style: {
+      display: "flex",
+      justifyContent: "space-between",
+      alignItems: "flex-start",
+      marginBottom: 28
+    }
+  }, /*#__PURE__*/React.createElement("div", null, /*#__PURE__*/React.createElement("div", {
+    style: {
+      fontSize: 18,
+      fontWeight: 700,
+      color: C.text,
+      marginBottom: 4
+    }
+  }, "Jurnalul Meu"), /*#__PURE__*/React.createElement("div", {
+    style: {
+      fontSize: 11,
+      color: C.dim
+    }
+  }, xlData.fileName, " \xB7 importat ", xlData.importedAt)), /*#__PURE__*/React.createElement("div", {
+    style: {
+      display: "flex",
+      gap: 10
+    }
+  }, /*#__PURE__*/React.createElement(Btn, {
+    variant: "mentor",
+    small: true,
+    onClick: () => xlFileRef.current.click()
+  }, "\u2191 REIMPORT\u0102"), /*#__PURE__*/React.createElement(Btn, {
+    variant: "ghost",
+    small: true,
+    onClick: () => {
+      setXlData(null);
+      sSet("mentor_journal", null);
+    }
+  }, "\u0218TERGE"), /*#__PURE__*/React.createElement("input", {
+    ref: xlFileRef,
+    type: "file",
+    accept: ".xlsx,.xls",
+    style: {
+      display: "none"
+    },
+    onChange: e => e.target.files[0] && parseExcel(e.target.files[0])
+  }))), err && /*#__PURE__*/React.createElement("div", {
+    style: {
+      color: C.red,
+      fontSize: 11,
+      marginBottom: 16,
+      padding: "10px 14px",
+      background: C.red + "10",
+      border: `1px solid ${C.red}30`
+    }
+  }, err), /*#__PURE__*/React.createElement("div", {
+    style: {
+      display: "grid",
+      gridTemplateColumns: "repeat(4,1fr)",
+      gap: 10,
+      marginBottom: 20
+    }
+  }, /*#__PURE__*/React.createElement(StatTile, {
+    label: "Total Tradeuri",
+    value: s.totalTrades,
+    color: C.mentorAccent
+  }), /*#__PURE__*/React.createElement(StatTile, {
+    label: "Win Rate",
+    value: `${s.winRate.toFixed(1)}%`,
+    color: s.winRate >= 50 ? C.green : C.red,
+    sub: `${s.winners}W / ${s.losers}L`
+  }), /*#__PURE__*/React.createElement(StatTile, {
+    label: "P/L Net",
+    value: `${s.totalPL >= 0 ? "+" : ""}${s.totalPL.toFixed(2)}`,
+    color: s.totalPL >= 0 ? C.green : C.red
+  }), /*#__PURE__*/React.createElement(StatTile, {
+    label: "ROI Total",
+    value: `${s.roi >= 0 ? "+" : ""}${s.roi.toFixed(2)}%`,
+    color: s.roi >= 0 ? C.green : C.red,
+    sub: `${s.startBal.toFixed(0)} → ${s.endBal.toFixed(0)}`
+  })), /*#__PURE__*/React.createElement("div", {
+    style: {
+      display: "grid",
+      gridTemplateColumns: "repeat(4,1fr)",
+      gap: 10,
+      marginBottom: 28
+    }
+  }, /*#__PURE__*/React.createElement(StatTile, {
+    label: "Max Drawdown",
+    value: `${s.maxDD.toFixed(2)}%`,
+    color: s.maxDD < -10 ? C.red : s.maxDD < -5 ? C.gold : C.green
+  }), /*#__PURE__*/React.createElement(StatTile, {
+    label: "Avg Win",
+    value: `+${s.avgWin.toFixed(2)}`,
+    color: C.green
+  }), /*#__PURE__*/React.createElement(StatTile, {
+    label: "Avg Loss",
+    value: `${s.avgLoss.toFixed(2)}`,
+    color: C.red
+  }), /*#__PURE__*/React.createElement(StatTile, {
+    label: "RR Ratio",
+    value: s.avgLoss !== 0 ? Math.abs(s.avgWin / s.avgLoss).toFixed(2) : "—",
+    color: Math.abs(s.avgWin / (s.avgLoss || 1)) >= 1.5 ? C.green : C.gold
+  })), eq.length > 1 && /*#__PURE__*/React.createElement("div", {
+    style: {
+      background: C.surface,
+      border: `1px solid ${C.border}`,
+      padding: "20px",
+      marginBottom: 16
+    }
+  }, /*#__PURE__*/React.createElement("div", {
+    style: {
+      fontSize: 9,
+      color: C.dim,
+      letterSpacing: 2,
+      marginBottom: 4
+    }
+  }, "EQUITY CURVE"), /*#__PURE__*/React.createElement("div", {
+    style: {
+      fontSize: 11,
+      color: C.dim,
+      marginBottom: 16
+    }
+  }, eq[0].toFixed(2), " \u2192 ", eq[eq.length - 1].toFixed(2)), /*#__PURE__*/React.createElement(LineChart, {
+    data: eq,
+    height: 160,
+    zero: false
+  })), /*#__PURE__*/React.createElement("div", {
+    style: {
+      display: "grid",
+      gridTemplateColumns: "1fr 1fr",
+      gap: 16,
+      marginBottom: 16
+    }
+  }, /*#__PURE__*/React.createElement("div", {
+    style: {
+      background: C.surface,
+      border: `1px solid ${C.border}`,
+      padding: "20px"
+    }
+  }, /*#__PURE__*/React.createElement("div", {
+    style: {
+      fontSize: 9,
+      color: C.dim,
+      letterSpacing: 2,
+      marginBottom: 16
+    }
+  }, "ROI CUMULAT (%)"), /*#__PURE__*/React.createElement(LineChart, {
+    data: xlData.roiArr,
+    height: 110,
+    zero: false
+  })), /*#__PURE__*/React.createElement("div", {
+    style: {
+      background: C.surface,
+      border: `1px solid ${C.border}`,
+      padding: "20px"
+    }
+  }, /*#__PURE__*/React.createElement("div", {
+    style: {
+      fontSize: 9,
+      color: C.dim,
+      letterSpacing: 2,
+      marginBottom: 16
+    }
+  }, "P/L PER TRADE"), /*#__PURE__*/React.createElement(BarChart, {
+    data: xlData.trades.map(t => t.pl).filter(p => p !== 0),
+    height: 110,
+    colorFn: v => v >= 0 ? C.green : C.red
+  }))), (Object.keys(s.markets).length > 0 || Object.keys(s.strategies).length > 0) && /*#__PURE__*/React.createElement("div", {
+    style: {
+      display: "grid",
+      gridTemplateColumns: "1fr 1fr",
+      gap: 16,
+      marginBottom: 16
+    }
+  }, Object.keys(s.markets).length > 0 && /*#__PURE__*/React.createElement("div", {
+    style: {
+      background: C.surface,
+      border: `1px solid ${C.border}`,
+      padding: "20px"
+    }
+  }, /*#__PURE__*/React.createElement("div", {
+    style: {
+      fontSize: 9,
+      color: C.dim,
+      letterSpacing: 2,
+      marginBottom: 14
+    }
+  }, "PIE\u021AE TRANZAC\u021AIONATE"), Object.entries(s.markets).sort((a, b) => b[1] - a[1]).map(([m, n]) => /*#__PURE__*/React.createElement("div", {
+    key: m,
+    style: {
+      display: "flex",
+      justifyContent: "space-between",
+      padding: "6px 0",
+      borderBottom: `1px solid ${C.border}30`
+    }
+  }, /*#__PURE__*/React.createElement("span", {
+    style: {
+      fontSize: 12,
+      color: C.gold
+    }
+  }, m), /*#__PURE__*/React.createElement("span", {
+    style: {
+      fontSize: 11,
+      color: C.dim
+    }
+  }, n, " tradeuri")))), Object.keys(s.strategies).length > 0 && /*#__PURE__*/React.createElement("div", {
+    style: {
+      background: C.surface,
+      border: `1px solid ${C.border}`,
+      padding: "20px"
+    }
+  }, /*#__PURE__*/React.createElement("div", {
+    style: {
+      fontSize: 9,
+      color: C.dim,
+      letterSpacing: 2,
+      marginBottom: 14
+    }
+  }, "STRATEGII"), Object.entries(s.strategies).sort((a, b) => b[1] - a[1]).map(([st, n]) => /*#__PURE__*/React.createElement("div", {
+    key: st,
+    style: {
+      display: "flex",
+      justifyContent: "space-between",
+      padding: "6px 0",
+      borderBottom: `1px solid ${C.border}30`
+    }
+  }, /*#__PURE__*/React.createElement("span", {
+    style: {
+      fontSize: 12,
+      color: C.mentorAccent
+    }
+  }, st), /*#__PURE__*/React.createElement("span", {
+    style: {
+      fontSize: 11,
+      color: C.dim
+    }
+  }, n, " tradeuri"))))), xlData.trades.filter(t => t.comment).length > 0 && /*#__PURE__*/React.createElement("div", {
+    style: {
+      background: C.surface,
+      border: `1px solid ${C.border}`,
+      padding: "20px",
+      marginBottom: 16
+    }
+  }, /*#__PURE__*/React.createElement("div", {
+    style: {
+      fontSize: 9,
+      color: C.dim,
+      letterSpacing: 2,
+      marginBottom: 14
+    }
+  }, "NOTE DIN JURNAL (", xlData.trades.filter(t => t.comment).length, ")"), xlData.trades.filter(t => t.comment).slice(0, 20).map((t, i) => /*#__PURE__*/React.createElement("div", {
+    key: i,
+    style: {
+      padding: "8px 12px",
+      borderLeft: `3px solid ${t.pl >= 0 ? C.green : C.red}`,
+      marginBottom: 6,
+      background: C.surface2
+    }
+  }, /*#__PURE__*/React.createElement("div", {
+    style: {
+      fontSize: 9,
+      color: C.dim,
+      letterSpacing: 1,
+      marginBottom: 3
+    }
+  }, "#", t.no, " ", t.entry, " ", t.market && `· ${t.market}`), /*#__PURE__*/React.createElement("div", {
+    style: {
+      fontSize: 11,
+      color: C.text,
+      lineHeight: 1.6
+    }
+  }, t.comment)))));
+}
+
+// ─── Cloud Sync Manager Component ────────────────────────────────────────────
+function CloudSyncManager() {
+  const [apiKey, setApiKey] = useState(() => sGet(CLOUD_KEY_STORE) || "");
+  const [binId, setBinId] = useState(() => sGet(CLOUD_BIN_STORE) || "");
+  const [status, setStatus] = useState("");
+  const [err, setErr] = useState("");
+  const [loading, setLoading] = useState(false);
+  const [lastSync, setLastSync] = useState(() => sGet("last_cloud_sync") || "");
+  const saveKey = () => {
+    if (!apiKey.trim()) {
+      setErr("Introdu API key.");
+      return;
+    }
+    sSet(CLOUD_KEY_STORE, apiKey.trim());
+    if (binId.trim()) sSet(CLOUD_BIN_STORE, binId.trim());
+    setStatus("✓ Salvat");
+    setErr("");
+    setTimeout(() => setStatus(""), 2500);
+  };
+  const push = async () => {
+    setLoading(true);
+    setErr("");
+    setStatus("");
+    try {
+      const data = gatherAllData();
+      await cloudPush(data);
+      const ts = new Date().toLocaleString("ro-RO");
+      sSet("last_cloud_sync", ts);
+      setLastSync(ts);
+      setStatus(`✓ Sincronizat la ${ts}`);
+    } catch (e) {
+      setErr(e.message);
+    }
+    setLoading(false);
+  };
+  const pull = async () => {
+    setLoading(true);
+    setErr("");
+    setStatus("");
+    try {
+      const data = await cloudPull();
+      restoreAllData(data);
+      const ts = new Date().toLocaleString("ro-RO");
+      sSet("last_cloud_sync", ts);
+      setLastSync(ts);
+      setStatus("✓ Date restaurate din cloud. Reîncarcă pagina.");
+    } catch (e) {
+      setErr(e.message);
+    }
+    setLoading(false);
+  };
+  const hasKey = !!sGet(CLOUD_KEY_STORE);
+  return /*#__PURE__*/React.createElement("div", {
+    style: {
+      background: C.surface,
+      border: `1px solid ${C.mentorAccent}30`,
+      borderTop: `2px solid ${C.mentorAccent}`,
+      padding: "24px",
+      marginBottom: 24
+    }
+  }, /*#__PURE__*/React.createElement("div", {
+    style: {
+      fontSize: 13,
+      fontWeight: 700,
+      color: C.mentorAccent,
+      marginBottom: 4
+    }
+  }, "\u2601 Cloud Sync \u2014 JSONBin.io"), /*#__PURE__*/React.createElement("div", {
+    style: {
+      fontSize: 11,
+      color: C.dim,
+      lineHeight: 1.8,
+      marginBottom: 16
+    }
+  }, "Sincronizeaz\u0103 datele pe orice calculator. Pa\u0219i: 1) Creeaz\u0103 cont gratuit pe", " ", /*#__PURE__*/React.createElement("a", {
+    href: "https://jsonbin.io",
+    target: "_blank",
+    rel: "noreferrer",
+    style: {
+      color: C.mentorAccent
+    }
+  }, "jsonbin.io"), " ", "\u2192 2) API Keys \u2192 3) copiaz\u0103 Master Key de mai jos."), /*#__PURE__*/React.createElement("div", {
+    style: {
+      marginBottom: 12
+    }
+  }, /*#__PURE__*/React.createElement("div", {
+    style: {
+      fontSize: 9,
+      color: C.dim,
+      letterSpacing: 2,
+      marginBottom: 6
+    }
+  }, "MASTER KEY (jsonbin.io)"), /*#__PURE__*/React.createElement("div", {
+    style: {
+      display: "flex",
+      gap: 8
+    }
+  }, /*#__PURE__*/React.createElement(Input, {
+    value: apiKey,
+    onChange: setApiKey,
+    placeholder: "$2b$10$...",
+    type: "password",
+    style: {
+      flex: 1
+    }
+  }), /*#__PURE__*/React.createElement(Btn, {
+    variant: "mentor",
+    small: true,
+    onClick: saveKey
+  }, "SALVEAZ\u0102"))), binId && /*#__PURE__*/React.createElement("div", {
+    style: {
+      marginBottom: 16,
+      fontSize: 10,
+      color: C.dim
+    }
+  }, "Bin ID: ", /*#__PURE__*/React.createElement("span", {
+    style: {
+      color: C.gold,
+      fontFamily: "monospace"
+    }
+  }, binId), /*#__PURE__*/React.createElement("button", {
+    onClick: () => {
+      sSet(CLOUD_BIN_STORE, "");
+      setBinId("");
+    },
+    style: {
+      marginLeft: 8,
+      background: "none",
+      border: "none",
+      color: C.red,
+      cursor: "pointer",
+      fontSize: 10
+    }
+  }, "\xD7 reseteaz\u0103")), hasKey && /*#__PURE__*/React.createElement("div", {
+    style: {
+      display: "flex",
+      gap: 10,
+      flexWrap: "wrap",
+      marginBottom: 12
+    }
+  }, /*#__PURE__*/React.createElement(Btn, {
+    variant: "mentor",
+    small: true,
+    onClick: push,
+    disabled: loading
+  }, loading ? "..." : "⬆ TRIMITE ÎN CLOUD"), /*#__PURE__*/React.createElement(Btn, {
+    variant: "ghost",
+    small: true,
+    onClick: pull,
+    disabled: loading
+  }, loading ? "..." : "⬇ PREIA DIN CLOUD")), lastSync && /*#__PURE__*/React.createElement("div", {
+    style: {
+      fontSize: 10,
+      color: C.dim,
+      marginBottom: 8
+    }
+  }, "Ultima sincronizare: ", lastSync), status && /*#__PURE__*/React.createElement("div", {
+    style: {
+      fontSize: 11,
+      color: C.green,
+      padding: "8px 12px",
+      background: C.green + "10",
+      border: `1px solid ${C.green}30`
+    }
+  }, status), err && /*#__PURE__*/React.createElement("div", {
+    style: {
+      fontSize: 11,
+      color: C.red,
+      padding: "8px 12px",
+      background: C.red + "10",
+      border: `1px solid ${C.red}30`
+    }
+  }, err), /*#__PURE__*/React.createElement("div", {
+    style: {
+      marginTop: 16,
+      fontSize: 10,
+      color: C.dim,
+      lineHeight: 1.7,
+      padding: "10px 14px",
+      background: C.surface2,
+      border: `1px solid ${C.border}`
+    }
+  }, "\u2139 Workflow: pe PC1 apas\u0103 ", /*#__PURE__*/React.createElement("strong", {
+    style: {
+      color: C.text
+    }
+  }, "TRIMITE \xCEN CLOUD"), " dup\u0103 fiecare sesiune. Pe PC2 apas\u0103 ", /*#__PURE__*/React.createElement("strong", {
+    style: {
+      color: C.text
+    }
+  }, "PREIA DIN CLOUD"), " pentru a restaura tot. JSONBin gratuit = 10.000 req/lun\u0103, suficient pentru uz zilnic."));
+}
 function StorageWarning() {
   const [dismissed, setDismissed] = useState(false);
   if (!_useMemory || dismissed) return null;
