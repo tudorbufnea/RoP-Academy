@@ -3878,6 +3878,8 @@ function MentorView({
   };
   const vc = v => v === "BUNĂ" ? C.green : v === "SLABĂ" ? C.red : C.gold;
   const tc = t => t === "↑" ? C.green : t === "↓" ? C.red : C.gold;
+  const [xlData, setXlData] = useState(() => sGet("mentor_journal") || null);
+  const xlFileRef = useRef();
   if (loading) return /*#__PURE__*/React.createElement("div", {
     style: {
       minHeight: "100vh",
@@ -3891,8 +3893,6 @@ function MentorView({
   }));
   const selData = selected ? studentData[selected] || {} : {};
   const selSessions = selData.sessions || [];
-  const [xlData, setXlData] = useState(() => sGet("mentor_journal") || null);
-  const xlFileRef = useRef();
   const tabs = [{
     id: "dashboard",
     label: "📊 Dashboard"
