@@ -1090,6 +1090,90 @@ function BarChart({
 }
 
 // ─── Student History Tab ──────────────────────────────────────────────────────
+
+function WeekdayLabel({
+  trade
+}) {
+  const weekdays = ['Duminică', 'Luni', 'Marți', 'Miercuri', 'Joi', 'Vineri', 'Sâmbătă'];
+  const wd = (trade === null || trade === void 0 ? void 0 : trade.weekday) || weekdays[new Date().getDay()];
+  return React.createElement('div', {
+    style: {
+      marginTop: 8,
+      fontSize: 10,
+      color: C.dim
+    }
+  }, '📅 Ziua: ', React.createElement('span', {
+    style: {
+      color: C.gold
+    }
+  }, wd));
+}
+function TradeNoteRow({
+  idx,
+  tn,
+  trade
+}) {
+  const strat = (tn === null || tn === void 0 ? void 0 : tn.strategy) || (typeof tn === 'string' ? '' : null);
+  const risk = tn === null || tn === void 0 ? void 0 : tn.riskPct;
+  const pl2 = tn === null || tn === void 0 ? void 0 : tn.pl2;
+  const pl3 = tn === null || tn === void 0 ? void 0 : tn.pl3;
+  const note = (tn === null || tn === void 0 ? void 0 : tn.note) || (typeof tn === 'string' ? tn : '');
+  const wd = (trade === null || trade === void 0 ? void 0 : trade.weekday) || '';
+  if (!strat && !risk && !pl2 && !pl3 && !note && !wd) return null;
+  return /*#__PURE__*/React.createElement("div", {
+    style: {
+      padding: "10px 14px",
+      borderLeft: `3px solid ${C.gold}40`,
+      marginBottom: 8,
+      background: C.surface2
+    }
+  }, /*#__PURE__*/React.createElement("div", {
+    style: {
+      fontSize: 9,
+      color: C.gold + "80",
+      letterSpacing: 1,
+      marginBottom: 6
+    }
+  }, "TRADE #", parseInt(idx) + 1, wd && /*#__PURE__*/React.createElement("span", {
+    style: {
+      color: C.dim,
+      marginLeft: 8
+    }
+  }, "\xB7 ", wd)), /*#__PURE__*/React.createElement("div", {
+    style: {
+      display: "flex",
+      gap: 16,
+      flexWrap: "wrap",
+      marginBottom: note ? 8 : 0
+    }
+  }, strat && /*#__PURE__*/React.createElement("span", {
+    style: {
+      fontSize: 11,
+      color: C.mentorAccent
+    }
+  }, "\uD83D\uDCCC ", strat), risk && /*#__PURE__*/React.createElement("span", {
+    style: {
+      fontSize: 11,
+      color: C.gold
+    }
+  }, "\u26A1 Risk: ", risk, "%"), pl2 && /*#__PURE__*/React.createElement("span", {
+    style: {
+      fontSize: 11,
+      color: parseFloat(pl2) >= 0 ? C.green : C.red
+    }
+  }, "T2: ", parseFloat(pl2) >= 0 ? "+" : "", parseFloat(pl2).toFixed(2)), pl3 && /*#__PURE__*/React.createElement("span", {
+    style: {
+      fontSize: 11,
+      color: parseFloat(pl3) >= 0 ? C.green : C.red
+    }
+  }, "T3: ", parseFloat(pl3) >= 0 ? "+" : "", parseFloat(pl3).toFixed(2))), note && /*#__PURE__*/React.createElement("div", {
+    style: {
+      fontSize: 11,
+      color: C.text,
+      lineHeight: 1.6
+    }
+  }, note));
+}
 function StudentHistoryTab({
   history,
   onViewSession
@@ -1315,70 +1399,15 @@ function StudentHistoryTab({
         letterSpacing: 2,
         marginBottom: 12
       }
-    }, "DETALII PER TRADE"), Object.entries(sess.tradeNotes).map(([idx, tn]) => tn ? (_sess$trades => {
-      const strat = (tn === null || tn === void 0 ? void 0 : tn.strategy) || (typeof tn === "string" ? "" : null);
-      const risk = tn === null || tn === void 0 ? void 0 : tn.riskPct;
-      const pl2 = tn === null || tn === void 0 ? void 0 : tn.pl2;
-      const pl3 = tn === null || tn === void 0 ? void 0 : tn.pl3;
-      const note = (tn === null || tn === void 0 ? void 0 : tn.note) || (typeof tn === "string" ? tn : "");
-      const t = (_sess$trades = sess.trades) === null || _sess$trades === void 0 ? void 0 : _sess$trades[parseInt(idx)];
-      const wd = (t === null || t === void 0 ? void 0 : t.weekday) || "";
-      if (!strat && !risk && !pl2 && !pl3 && !note && !wd) return null;
-      return /*#__PURE__*/React.createElement("div", {
+    }, "DETALII PER TRADE"), Object.entries(sess.tradeNotes).map(([idx, tn]) => {
+      var _sess$trades;
+      return tn ? /*#__PURE__*/React.createElement(TradeNoteRow, {
         key: idx,
-        style: {
-          padding: "10px 14px",
-          borderLeft: `3px solid ${C.gold}40`,
-          marginBottom: 8,
-          background: C.surface2
-        }
-      }, /*#__PURE__*/React.createElement("div", {
-        style: {
-          fontSize: 9,
-          color: C.gold + "80",
-          letterSpacing: 1,
-          marginBottom: 6
-        }
-      }, "TRADE #", parseInt(idx) + 1, wd && /*#__PURE__*/React.createElement("span", {
-        style: {
-          color: C.dim,
-          marginLeft: 8
-        }
-      }, "\xB7 ", wd)), /*#__PURE__*/React.createElement("div", {
-        style: {
-          display: "flex",
-          gap: 16,
-          flexWrap: "wrap",
-          marginBottom: note ? 8 : 0
-        }
-      }, strat && /*#__PURE__*/React.createElement("span", {
-        style: {
-          fontSize: 11,
-          color: C.mentorAccent
-        }
-      }, "\uD83D\uDCCC ", strat), risk && /*#__PURE__*/React.createElement("span", {
-        style: {
-          fontSize: 11,
-          color: C.gold
-        }
-      }, "\u26A1 Risk: ", risk, "%"), pl2 && /*#__PURE__*/React.createElement("span", {
-        style: {
-          fontSize: 11,
-          color: parseFloat(pl2) >= 0 ? C.green : C.red
-        }
-      }, "T2: ", parseFloat(pl2) >= 0 ? "+" : "", parseFloat(pl2).toFixed(2)), pl3 && /*#__PURE__*/React.createElement("span", {
-        style: {
-          fontSize: 11,
-          color: parseFloat(pl3) >= 0 ? C.green : C.red
-        }
-      }, "T3: ", parseFloat(pl3) >= 0 ? "+" : "", parseFloat(pl3).toFixed(2))), note && /*#__PURE__*/React.createElement("div", {
-        style: {
-          fontSize: 11,
-          color: C.text,
-          lineHeight: 1.6
-        }
-      }, note));
-    })() : null)), /*#__PURE__*/React.createElement("div", {
+        idx: idx,
+        tn: tn,
+        trade: (_sess$trades = sess.trades) === null || _sess$trades === void 0 ? void 0 : _sess$trades[parseInt(idx)]
+      }) : null;
+    })), /*#__PURE__*/React.createElement("div", {
       style: {
         display: "flex",
         gap: 12
@@ -2912,21 +2941,9 @@ function StudentView({
         lineHeight: 1.6,
         boxSizing: "border-box"
       }
-    }), (() => {
-      const weekdays = ['Duminică', 'Luni', 'Marți', 'Miercuri', 'Joi', 'Vineri', 'Sâmbătă'];
-      const wd = t.weekday || weekdays[new Date().getDay()];
-      return /*#__PURE__*/React.createElement("div", {
-        style: {
-          marginTop: 8,
-          fontSize: 10,
-          color: C.dim
-        }
-      }, "\uD83D\uDCC5 Ziua: ", /*#__PURE__*/React.createElement("span", {
-        style: {
-          color: C.gold
-        }
-      }, wd));
-    })()));
+    }), /*#__PURE__*/React.createElement(WeekdayLabel, {
+      trade: t
+    })));
   })), /*#__PURE__*/React.createElement("div", {
     style: {
       marginBottom: 20
