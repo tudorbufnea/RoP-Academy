@@ -35,7 +35,9 @@ const {
 
 // ─── Firebase Realtime Database (REST API — no SDK needed) ────────────────────
 const FB = {
-  base: "https://rop-tudor-default-rtdb.europe-west1.firebasedatabase.app",
+  get base() {
+    return sGet("fb_database_url") || "";
+  },
   async get(path) {
     const r = await fetch(`${FB.base}/${path}.json`);
     if (!r.ok) throw new Error(`FB get error ${r.status}`);
@@ -85,9 +87,11 @@ function fbSlug(name) {
 }
 
 // ─── Config ─────────────────────────────────────────────────────────────────
-const DEFAULT_PASS = "mentor2025";
 function getMentorPass() {
-  return sGet("mentor_pass") || DEFAULT_PASS;
+  return sGet("mentor_pass") || "";
+}
+function isSetupDone() {
+  return !!(sGet("mentor_pass") && sGet("fb_database_url"));
 }
 const STORAGE_PREFIX = "rop_academy_";
 
@@ -611,6 +615,237 @@ function loadApiKey() {
 }
 
 // ─── Auth ─────────────────────────────────────────────────────────────────────
+
+// ─── Setup Wizard (first-time mentor setup) ───────────────────────────────────
+function SetupWizard({
+  onDone
+}) {
+  const [step, setStep] = useState(1);
+  const [dbUrl, setDbUrl] = useState("");
+  const [pass, setPass] = useState("");
+  const [pass2, setPass2] = useState("");
+  const [testing, setTesting] = useState(false);
+  const [err, setErr] = useState("");
+  const testAndNext = async () => {
+    const url = dbUrl.trim().replace(/\/+$/, "");
+    if (!url.startsWith("https://") || !url.includes("firebasedatabase.app")) {
+      setErr("URL invalid. Trebuie să conțină firebasedatabase.app");
+      return;
+    }
+    setTesting(true);
+    setErr("");
+    try {
+      const r = await fetch(`${url}/ping.json`, {
+        method: "PUT",
+        headers: {
+          "Content-Type": "application/json"
+        },
+        body: JSON.stringify({
+          ok: true
+        })
+      });
+      if (!r.ok) throw new Error(`Firebase răspunde cu ${r.status}. Verifică Rules (read/write: true).`);
+      sSet("fb_database_url", url);
+      setStep(2);
+    } catch (e) {
+      setErr(e.message);
+    }
+    setTesting(false);
+  };
+  const finish = () => {
+    if (!pass || pass.length < 6) {
+      setErr("Parola trebuie să aibă minim 6 caractere.");
+      return;
+    }
+    if (pass !== pass2) {
+      setErr("Parolele nu coincid.");
+      return;
+    }
+    sSet("mentor_pass", pass);
+    onDone();
+  };
+  return /*#__PURE__*/React.createElement("div", {
+    style: {
+      minHeight: "100vh",
+      background: C.bg,
+      display: "flex",
+      alignItems: "center",
+      justifyContent: "center",
+      fontFamily: font
+    }
+  }, /*#__PURE__*/React.createElement("div", {
+    style: {
+      width: 480,
+      padding: "0 24px"
+    }
+  }, /*#__PURE__*/React.createElement("div", {
+    style: {
+      textAlign: "center",
+      marginBottom: 40
+    }
+  }, /*#__PURE__*/React.createElement("div", {
+    style: {
+      fontSize: 26,
+      fontWeight: 700,
+      color: C.gold,
+      letterSpacing: 2,
+      marginBottom: 6
+    }
+  }, "ROP TRADING ACADEMY"), /*#__PURE__*/React.createElement("div", {
+    style: {
+      fontSize: 10,
+      color: C.dim,
+      letterSpacing: 3
+    }
+  }, "CONFIGURARE INI\u021AIAL\u0102 MENTOR")), /*#__PURE__*/React.createElement("div", {
+    style: {
+      display: "flex",
+      gap: 0,
+      marginBottom: 32,
+      borderBottom: `1px solid ${C.border}`
+    }
+  }, ["Firebase", "Parolă"].map((s, i) => /*#__PURE__*/React.createElement("div", {
+    key: s,
+    style: {
+      flex: 1,
+      padding: "10px 0",
+      textAlign: "center",
+      fontSize: 10,
+      letterSpacing: 2,
+      color: step === i + 1 ? C.mentorAccent : C.dim,
+      borderBottom: step === i + 1 ? `2px solid ${C.mentorAccent}` : "2px solid transparent"
+    }
+  }, i + 1, ". ", s.toUpperCase()))), step === 1 && /*#__PURE__*/React.createElement("div", null, /*#__PURE__*/React.createElement("div", {
+    style: {
+      fontSize: 13,
+      fontWeight: 700,
+      color: C.text,
+      marginBottom: 8
+    }
+  }, "Conecteaz\u0103 Firebase"), /*#__PURE__*/React.createElement("div", {
+    style: {
+      fontSize: 11,
+      color: C.dim,
+      lineHeight: 1.8,
+      marginBottom: 20
+    }
+  }, "Introdu URL-ul bazei tale de date Firebase Realtime Database.", /*#__PURE__*/React.createElement("br", null), /*#__PURE__*/React.createElement("span", {
+    style: {
+      color: C.gold
+    }
+  }, "console.firebase.google.com \u2192 proiect \u2192 Realtime Database")), /*#__PURE__*/React.createElement("div", {
+    style: {
+      marginBottom: 16
+    }
+  }, /*#__PURE__*/React.createElement("div", {
+    style: {
+      fontSize: 9,
+      color: C.dim,
+      letterSpacing: 2,
+      marginBottom: 6
+    }
+  }, "DATABASE URL"), /*#__PURE__*/React.createElement(Input, {
+    value: dbUrl,
+    onChange: setDbUrl,
+    placeholder: "https://proiect-default-rtdb.europe-west1.firebasedatabase.app"
+  })), /*#__PURE__*/React.createElement("div", {
+    style: {
+      marginBottom: 20,
+      padding: "10px 14px",
+      background: C.surface2,
+      border: `1px solid ${C.border}`,
+      fontSize: 10,
+      color: C.dim,
+      lineHeight: 1.7
+    }
+  }, "\u26A0 Asigur\u0103-te c\u0103 ai setat Rules pe ", /*#__PURE__*/React.createElement("span", {
+    style: {
+      color: C.gold
+    }
+  }, "read: true, write: true"), " \xEEn consola Firebase."), err && /*#__PURE__*/React.createElement("div", {
+    style: {
+      color: C.red,
+      fontSize: 11,
+      marginBottom: 14,
+      padding: "8px 12px",
+      background: C.red + "10",
+      border: `1px solid ${C.red}30`
+    }
+  }, err), /*#__PURE__*/React.createElement(Btn, {
+    variant: "mentor",
+    onClick: testAndNext,
+    disabled: testing
+  }, testing ? "SE TESTEAZĂ..." : "TESTEAZĂ ȘI CONTINUĂ →")), step === 2 && /*#__PURE__*/React.createElement("div", null, /*#__PURE__*/React.createElement("div", {
+    style: {
+      fontSize: 13,
+      fontWeight: 700,
+      color: C.text,
+      marginBottom: 8
+    }
+  }, "Seteaz\u0103 parola mentorului"), /*#__PURE__*/React.createElement("div", {
+    style: {
+      fontSize: 11,
+      color: C.dim,
+      lineHeight: 1.8,
+      marginBottom: 20
+    }
+  }, "Aceast\u0103 parol\u0103 este unic\u0103 pentru platforma ta. Nu o \xEEmp\u0103rt\u0103\u0219i cu elevii."), /*#__PURE__*/React.createElement("div", {
+    style: {
+      marginBottom: 12
+    }
+  }, /*#__PURE__*/React.createElement("div", {
+    style: {
+      fontSize: 9,
+      color: C.dim,
+      letterSpacing: 2,
+      marginBottom: 6
+    }
+  }, "PAROL\u0102 MENTOR"), /*#__PURE__*/React.createElement(Input, {
+    value: pass,
+    onChange: setPass,
+    type: "password",
+    placeholder: "minim 6 caractere"
+  })), /*#__PURE__*/React.createElement("div", {
+    style: {
+      marginBottom: 20
+    }
+  }, /*#__PURE__*/React.createElement("div", {
+    style: {
+      fontSize: 9,
+      color: C.dim,
+      letterSpacing: 2,
+      marginBottom: 6
+    }
+  }, "CONFIRMARE PAROL\u0102"), /*#__PURE__*/React.createElement(Input, {
+    value: pass2,
+    onChange: setPass2,
+    type: "password",
+    placeholder: "repet\u0103 parola"
+  })), err && /*#__PURE__*/React.createElement("div", {
+    style: {
+      color: C.red,
+      fontSize: 11,
+      marginBottom: 14,
+      padding: "8px 12px",
+      background: C.red + "10",
+      border: `1px solid ${C.red}30`
+    }
+  }, err), /*#__PURE__*/React.createElement("div", {
+    style: {
+      display: "flex",
+      gap: 10
+    }
+  }, /*#__PURE__*/React.createElement(Btn, {
+    variant: "ghost",
+    onClick: () => {
+      setStep(1);
+      setErr("");
+    }
+  }, "\u2190 \xCENAPOI"), /*#__PURE__*/React.createElement(Btn, {
+    variant: "mentor",
+    onClick: finish
+  }, "FINALIZEAZ\u0102 CONFIGURAREA \u2192")))));
+}
 function AuthScreen({
   onLogin
 }) {
@@ -5992,6 +6227,10 @@ function StorageWarning() {
 }
 function App() {
   const [user, setUser] = useState(null);
+  const [setup, setSetup] = useState(!isSetupDone());
+  if (setup) return /*#__PURE__*/React.createElement(SetupWizard, {
+    onDone: () => setSetup(false)
+  });
   return /*#__PURE__*/React.createElement(React.Fragment, null, /*#__PURE__*/React.createElement(StorageWarning, null), !user ? /*#__PURE__*/React.createElement(AuthScreen, {
     onLogin: setUser
   }) : user.role === "student" ? /*#__PURE__*/React.createElement(StudentView, {
