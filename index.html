@@ -306,14 +306,14 @@ function calcStats(trades, accountSize = 0) {
     accountPct
   };
 }
-async function fetchAIAnalysis(trades, stats, history, notes, objectives, accountSize) {
+async function fetchAIAnalysis(trades, stats, history, notes, objectives, accountSize, tradeNotesParam) {
   var _stats$accountAfter, _stats$accountPct, _data$content;
   const apiKey = loadApiKey();
   if (!apiKey) throw new Error("API key lipsă. Mentorul trebuie să configureze cheia în Setări → Mentor.");
   const histCtx = history.length > 0 ? history.slice(-5).map((s, i) => `Ses.${i + 1}(${s.date}): WR ${s.stats.winRate.toFixed(1)}%, P&L ${s.stats.totalPnl.toFixed(2)}, Pct ${(s.stats.totalPoints || 0) >= 0 ? "+" : ""}${(s.stats.totalPoints || 0).toFixed(1)}, RR ${s.stats.rr.toFixed(2)}`).join("\n") : "Prima sesiune.";
   const prompt = `Ești un trading coach profesionist pentru indici (US30, NAS100). Analizează strict datele.
 TRADEURI:\n${trades.map((t, i) => {
-    const tn = tradeNotes && tradeNotes[i];
+    const tn = (tradeNotesParam || tradeNotes || {})[i];
     const strat = (tn === null || tn === void 0 ? void 0 : tn.strategy) || t.strategy || "";
     const risk = ((tn === null || tn === void 0 ? void 0 : tn.riskPct) != null ? tn.riskPct : t.riskPct) || "";
     const note = (tn === null || tn === void 0 ? void 0 : tn.note) || (typeof tn === "string" ? tn : "") || "";
@@ -1105,7 +1105,7 @@ function AuthScreen({
     r: "student",
     label: "ELEV",
     icon: "📈",
-    desc: "Jurnal personal · analiză AI"
+    desc: "Jurnal personal · sesiuni · curs"
   }, {
     r: "mentor",
     label: "MENTOR",
@@ -4022,6 +4022,7 @@ function MentorView({
   const [objDraft, setObjDraft] = useState("");
   const [fbDraft, setFbDraft] = useState({});
   const [expanded, setExpanded] = useState(null);
+  const [aiLoading, setAiLoading] = useState({}); // {sessIdx: true/false}
   const [lessonDates, setLessonDates] = useState({});
   const [autoBackupTime, setAutoBackupTime] = useState(() => sGet("auto_backup_time") || "");
   const [lastBackup, setLastBackup] = useState(() => sGet("last_backup_ts") || null);
@@ -4270,6 +4271,46 @@ function MentorView({
       const dateStr = today.toISOString().split("T")[0];
       saveLessonDate(lessonId, dateStr);
     }
+  };
+  const runMentorAI = async sessIdx => {
+    var _studentData$selected2;
+    const sess = (((_studentData$selected2 = studentData[selected]) === null || _studentData$selected2 === void 0 ? void 0 : _studentData$selected2.sessions) || [])[sessIdx];
+    if (!sess) return;
+    setAiLoading(p => ({
+      ...p,
+      [sessIdx]: true
+    }));
+    try {
+      var _studentData$selected3, _studentData$selected4;
+      const history = (((_studentData$selected3 = studentData[selected]) === null || _studentData$selected3 === void 0 ? void 0 : _studentData$selected3.sessions) || []).slice(0, sessIdx);
+      const objectives = sGet(`objectives__${selected.toLowerCase().replace(/\s+/g, "_")}`) || "";
+      const analysis = await fetchAIAnalysis(sess.trades || [], sess.stats, history, sess.notes || "", objectives, sess.accountSize || 0, sess.tradeNotes || {});
+      // Save analysis back into the session
+      const slug = fbSlug(selected);
+      const allSessions = [...(((_studentData$selected4 = studentData[selected]) === null || _studentData$selected4 === void 0 ? void 0 : _studentData$selected4.sessions) || [])];
+      allSessions[sessIdx] = {
+        ...allSessions[sessIdx],
+        analysis
+      };
+      sSet(`sessions__${selected.toLowerCase().replace(/\s+/g, "_")}`, allSessions);
+      setStudentData(p => ({
+        ...p,
+        [selected]: {
+          ...p[selected],
+          sessions: allSessions
+        }
+      }));
+      // Sync to Firebase
+      FB.patch(`students/${slug}`, {
+        sessions: allSessions
+      }).catch(() => {});
+    } catch (e) {
+      alert("Eroare AI: " + e.message);
+    }
+    setAiLoading(p => ({
+      ...p,
+      [sessIdx]: false
+    }));
   };
   const resetPin = name => {
     if (!window.confirm(`Resetezi PIN-ul pentru ${name}?`)) return;
@@ -5175,7 +5216,7 @@ function MentorView({
       fontSize: 12
     }
   }, "Elevul nu a \xEEnregistrat sesiuni.") : /*#__PURE__*/React.createElement("div", null, /*#__PURE__*/React.createElement(SectionTitle, null, "Sesiuni (", selSessions.length, ")"), [...selSessions].reverse().map((sess, revIdx) => {
-    var _sess$analysis7, _sess$stats$accountAf, _sess$stats$accountPc;
+    var _sess$analysis7, _sess$analysis8, _sess$stats$accountAf, _sess$stats$accountPc;
     const idx = selSessions.length - 1 - revIdx;
     const isOpen = expanded === idx;
     const fb = (selData.feedbacks || {})[idx];
@@ -5210,6 +5251,9 @@ function MentorView({
     }, sess.date), ((_sess$analysis7 = sess.analysis) === null || _sess$analysis7 === void 0 ? void 0 : _sess$analysis7.verdict) && /*#__PURE__*/React.createElement(Badge, {
       label: sess.analysis.verdict,
       color: vc(sess.analysis.verdict)
+    }), ((_sess$analysis8 = sess.analysis) === null || _sess$analysis8 === void 0 ? void 0 : _sess$analysis8.scor) != null && /*#__PURE__*/React.createElement(Badge, {
+      label: `AI ${sess.analysis.scor}`,
+      color: sess.analysis.scor >= 70 ? C.green : sess.analysis.scor >= 40 ? C.orange : C.red
     }), /*#__PURE__*/React.createElement("span", {
       style: {
         fontSize: 10,
@@ -5292,39 +5336,125 @@ function MentorView({
       label: "W/L",
       small: true,
       value: `${sess.stats.wins}/${sess.stats.losses}`
-    })), sess.analysis && /*#__PURE__*/React.createElement("div", {
+    })), /*#__PURE__*/React.createElement("div", {
       style: {
         marginBottom: 20
       }
+    }, sess.analysis ? /*#__PURE__*/React.createElement("div", null, /*#__PURE__*/React.createElement("div", {
+      style: {
+        display: "flex",
+        alignItems: "center",
+        gap: 14,
+        marginBottom: 14,
+        padding: "14px 16px",
+        background: C.bg,
+        border: `1px solid ${C.border}`,
+        borderLeft: `4px solid ${sess.analysis.verdict === "BUNĂ" ? C.green : sess.analysis.verdict === "SLABĂ" ? C.red : C.orange}`
+      }
     }, /*#__PURE__*/React.createElement("div", {
       style: {
-        fontSize: 10,
-        color: C.dim,
-        letterSpacing: 2,
-        marginBottom: 10
+        width: 52,
+        height: 52,
+        borderRadius: "50%",
+        flexShrink: 0,
+        background: `conic-gradient(${sess.analysis.verdict === "BUNĂ" ? C.green : sess.analysis.verdict === "SLABĂ" ? C.red : C.orange} ${(sess.analysis.scor || 0) * 3.6}deg, #1c1c24 0deg)`,
+        display: "flex",
+        alignItems: "center",
+        justifyContent: "center"
       }
-    }, "ANALIZA AI"), /*#__PURE__*/React.createElement("div", {
+    }, /*#__PURE__*/React.createElement("div", {
       style: {
-        fontSize: 12,
-        color: C.text,
-        lineHeight: 1.7,
-        marginBottom: 12,
-        padding: "12px 16px",
+        width: 40,
+        height: 40,
+        borderRadius: "50%",
         background: C.bg,
-        border: `1px solid ${C.border}`
+        display: "flex",
+        alignItems: "center",
+        justifyContent: "center"
       }
-    }, sess.analysis.rezumat), /*#__PURE__*/React.createElement("div", {
+    }, /*#__PURE__*/React.createElement("span", {
+      style: {
+        fontSize: 13,
+        fontWeight: 700,
+        color: sess.analysis.verdict === "BUNĂ" ? C.green : sess.analysis.verdict === "SLABĂ" ? C.red : C.orange
+      }
+    }, sess.analysis.scor || 0))), /*#__PURE__*/React.createElement("div", {
+      style: {
+        flex: 1
+      }
+    }, /*#__PURE__*/React.createElement("div", {
+      style: {
+        display: "flex",
+        alignItems: "center",
+        gap: 8,
+        marginBottom: 4
+      }
+    }, /*#__PURE__*/React.createElement("span", {
+      style: {
+        fontSize: 11,
+        fontWeight: 700,
+        color: sess.analysis.verdict === "BUNĂ" ? C.green : sess.analysis.verdict === "SLABĂ" ? C.red : C.orange,
+        letterSpacing: 1
+      }
+    }, sess.analysis.verdict === "BUNĂ" ? "✓ SESIUNE BUNĂ" : sess.analysis.verdict === "SLABĂ" ? "✗ SESIUNE SLABĂ" : "◎ SESIUNE NEUTRĂ"), sess.analysis.respectat_obiectivele && sess.analysis.respectat_obiectivele !== "N/A" && /*#__PURE__*/React.createElement("span", {
+      style: {
+        fontSize: 9,
+        padding: "2px 7px",
+        border: `1px solid ${sess.analysis.respectat_obiectivele === "DA" ? C.green : sess.analysis.respectat_obiectivele === "NU" ? C.red : C.orange}40`,
+        color: sess.analysis.respectat_obiectivele === "DA" ? C.green : sess.analysis.respectat_obiectivele === "NU" ? C.red : C.orange,
+        letterSpacing: 1
+      }
+    }, "OBJ: ", sess.analysis.respectat_obiectivele)), /*#__PURE__*/React.createElement("div", {
+      style: {
+        fontSize: 11,
+        color: C.text,
+        lineHeight: 1.6
+      }
+    }, sess.analysis.rezumat)), /*#__PURE__*/React.createElement("button", {
+      onClick: () => runMentorAI(idx),
+      style: {
+        fontFamily: font,
+        fontSize: 9,
+        letterSpacing: 1,
+        color: C.dim,
+        background: "transparent",
+        border: `1px solid ${C.border}`,
+        padding: "5px 10px",
+        borderRadius: 2,
+        cursor: "pointer",
+        flexShrink: 0
+      }
+    }, "\u21BB RE-ANALIZ\u0102")), sess.analysis.focus_principal && /*#__PURE__*/React.createElement("div", {
+      style: {
+        marginBottom: 12,
+        padding: "8px 14px",
+        background: C.gold + "08",
+        border: `1px solid ${C.gold}20`,
+        fontSize: 11,
+        color: C.gold
+      }
+    }, "\uD83C\uDFAF FOCUS: ", sess.analysis.focus_principal), sess.analysis.pattern_periculos && /*#__PURE__*/React.createElement("div", {
+      style: {
+        marginBottom: 12,
+        padding: "8px 14px",
+        background: C.red + "08",
+        border: `1px solid ${C.red}20`,
+        fontSize: 11,
+        color: C.red
+      }
+    }, "\u26A0 PATTERN: ", sess.analysis.pattern_periculos), /*#__PURE__*/React.createElement("div", {
       style: {
         display: "grid",
         gridTemplateColumns: "1fr 1fr",
-        gap: 12
+        gap: 12,
+        marginBottom: 12
       }
     }, /*#__PURE__*/React.createElement("div", null, /*#__PURE__*/React.createElement("div", {
       style: {
         fontSize: 9,
         color: C.green,
         letterSpacing: 2,
-        marginBottom: 8
+        marginBottom: 6
       }
     }, "PUNCTE FORTE"), (sess.analysis.puncte_forte || []).map((p, i) => /*#__PURE__*/React.createElement("div", {
       key: i,
@@ -5333,14 +5463,15 @@ function MentorView({
         color: C.dim,
         padding: "6px 10px",
         borderLeft: `2px solid ${C.green}`,
-        marginBottom: 4
+        marginBottom: 4,
+        lineHeight: 1.5
       }
     }, p))), /*#__PURE__*/React.createElement("div", null, /*#__PURE__*/React.createElement("div", {
       style: {
         fontSize: 9,
         color: C.red,
         letterSpacing: 2,
-        marginBottom: 8
+        marginBottom: 6
       }
     }, "ERORI"), (sess.analysis.erori_identificate || []).map((e, i) => /*#__PURE__*/React.createElement("div", {
       key: i,
@@ -5349,9 +5480,57 @@ function MentorView({
         color: C.dim,
         padding: "6px 10px",
         borderLeft: `2px solid ${C.red}`,
-        marginBottom: 4
+        marginBottom: 4,
+        lineHeight: 1.5
       }
-    }, e))))), sess.notes && /*#__PURE__*/React.createElement("div", {
+    }, e)))), sess.analysis.sugestii_maine && sess.analysis.sugestii_maine.length > 0 && /*#__PURE__*/React.createElement("div", {
+      style: {
+        marginBottom: 12
+      }
+    }, /*#__PURE__*/React.createElement("div", {
+      style: {
+        fontSize: 9,
+        color: C.mentorAccent,
+        letterSpacing: 2,
+        marginBottom: 6
+      }
+    }, "SUGESTII PENTRU M\xC2INE"), sess.analysis.sugestii_maine.map((s, i) => /*#__PURE__*/React.createElement("div", {
+      key: i,
+      style: {
+        fontSize: 11,
+        color: C.dim,
+        padding: "6px 10px",
+        borderLeft: `2px solid ${C.mentorAccent}`,
+        marginBottom: 4,
+        lineHeight: 1.5
+      }
+    }, "\u2192 ", s))), sess.analysis.comparatie_cu_istoric && /*#__PURE__*/React.createElement("div", {
+      style: {
+        fontSize: 10,
+        color: C.dim,
+        fontStyle: "italic",
+        padding: "6px 10px",
+        borderLeft: `2px solid ${C.border}`
+      }
+    }, sess.analysis.comparatie_cu_istoric)) : /*#__PURE__*/React.createElement("div", {
+      style: {
+        textAlign: "center",
+        padding: "20px",
+        border: `1px dashed ${C.border}`,
+        borderRadius: 2
+      }
+    }, /*#__PURE__*/React.createElement("div", {
+      style: {
+        fontSize: 11,
+        color: C.dim,
+        marginBottom: 12
+      }
+    }, "Sesiunea nu are analiz\u0103 AI"), /*#__PURE__*/React.createElement(Btn, {
+      variant: "mentor",
+      small: true,
+      onClick: () => runMentorAI(idx),
+      disabled: aiLoading[idx]
+    }, aiLoading[idx] ? "🧠 SE ANALIZEAZĂ..." : "🧠 ANALIZEAZĂ CU AI"))), sess.notes && /*#__PURE__*/React.createElement("div", {
       style: {
         marginBottom: 20,
         padding: "12px 16px",
