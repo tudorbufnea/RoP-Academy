@@ -4138,6 +4138,27 @@ function MentorView({
     sDel(`pin__${name.toLowerCase().replace(/\s+/g, "_")}`);
     alert(`PIN resetat pentru ${name}.`);
   };
+  const deleteStudent = name => {
+    if (!window.confirm(`Ștergi elevul "${name}" și toate sesiunile lui? Acțiunea este ireversibilă.`)) return;
+    const slug = name.toLowerCase().replace(/\s+/g, "_");
+    ["sessions", "objectives", "feedbacks", "lessons", "account", "pin"].forEach(k => sDel(`${k}__${slug}`));
+    const newRoster = students.filter(s => s !== name);
+    sSet("roster", newRoster);
+    setStudents(newRoster);
+    setStudentData(prev => {
+      const d = {
+        ...prev
+      };
+      delete d[name];
+      return d;
+    });
+    if (selected === name) {
+      setSelected(null);
+      setTab("dashboard");
+    }
+    // Remove from Firebase too
+    FB.set(`students/${fbSlug(name)}`, null).catch(() => {});
+  };
   const addLesson = () => {
     if (!newLesson.title.trim()) return;
     const updated = [...course, {
@@ -5683,8 +5704,26 @@ function MentorView({
         fontSize: 10,
         color: C.dim
       }
-    }, (((_studentData$name = studentData[name]) === null || _studentData$name === void 0 ? void 0 : _studentData$name.sessions) || []).length, " sesiuni")), /*#__PURE__*/React.createElement("button", {
+    }, (((_studentData$name = studentData[name]) === null || _studentData$name === void 0 ? void 0 : _studentData$name.sessions) || []).length, " sesiuni")), /*#__PURE__*/React.createElement("div", {
+      style: {
+        display: "flex",
+        gap: 8
+      }
+    }, /*#__PURE__*/React.createElement("button", {
       onClick: () => resetPin(name),
+      style: {
+        fontFamily: font,
+        fontSize: 9,
+        letterSpacing: 1,
+        color: C.gold,
+        background: C.gold + "10",
+        border: `1px solid ${C.gold}30`,
+        padding: "4px 12px",
+        borderRadius: 2,
+        cursor: "pointer"
+      }
+    }, "RESET PIN"), /*#__PURE__*/React.createElement("button", {
+      onClick: () => deleteStudent(name),
       style: {
         fontFamily: font,
         fontSize: 9,
@@ -5696,7 +5735,7 @@ function MentorView({
         borderRadius: 2,
         cursor: "pointer"
       }
-    }, "RESET PIN"));
+    }, "\xD7 \u0218TERGE")));
   })), /*#__PURE__*/React.createElement("div", {
     style: {
       background: C.red + "05",
