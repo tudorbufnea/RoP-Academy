@@ -91,7 +91,7 @@ function getMentorPass() {
   return sGet("mentor_pass") || "";
 }
 function isSetupDone() {
-  return !!(sGet("mentor_pass") && sGet("fb_database_url"));
+  return !!sGet("fb_database_url");
 }
 const STORAGE_PREFIX = "rop_academy_";
 
@@ -620,12 +620,39 @@ function loadApiKey() {
 function SetupWizard({
   onDone
 }) {
+  // mode: "full" = first time ever, "restore" = PC nou cu Firebase URL cunoscut
+  const [mode, setMode] = useState(null); // null = detectare automată
   const [step, setStep] = useState(1);
   const [dbUrl, setDbUrl] = useState("");
   const [pass, setPass] = useState("");
   const [pass2, setPass2] = useState("");
   const [testing, setTesting] = useState(false);
   const [err, setErr] = useState("");
+
+  // La mount: încearcă să detecteze dacă există config în Firebase la /config
+  useEffect(() => {
+    // Dacă avem URL local, nu trebuie setup
+    if (sGet("fb_database_url")) {
+      onDone();
+      return;
+    }
+    setMode("full"); // Nu avem nimic local, arată setup complet
+  }, []);
+  const testUrl = async url => {
+    const r = await fetch(`${url}/ping.json`, {
+      method: "PUT",
+      headers: {
+        "Content-Type": "application/json"
+      },
+      body: JSON.stringify({
+        ok: true
+      })
+    });
+    if (!r.ok) throw new Error(`Firebase răspunde cu ${r.status}. Verifică Rules.`);
+    return true;
+  };
+
+  // Full setup: Pas 1 = Firebase URL
   const testAndNext = async () => {
     const url = dbUrl.trim().replace(/\/+$/, "");
     if (!url.startsWith("https://") || !url.includes("firebasedatabase.app")) {
@@ -635,34 +662,71 @@ function SetupWizard({
     setTesting(true);
     setErr("");
     try {
-      const r = await fetch(`${url}/ping.json`, {
-        method: "PUT",
-        headers: {
-          "Content-Type": "application/json"
-        },
-        body: JSON.stringify({
-          ok: true
-        })
-      });
-      if (!r.ok) throw new Error(`Firebase răspunde cu ${r.status}. Verifică Rules (read/write: true).`);
+      await testUrl(url);
       sSet("fb_database_url", url);
-      setStep(2);
+      // Check if config already exists in Firebase (mentor setup already done on another PC)
+      const existing = await fetch(`${url}/config.json`).then(r => r.json()).catch(() => null);
+      if (existing !== null && existing !== void 0 && existing.pass) {
+        // Config exists — just verify password
+        setMode("restore");
+        setStep(2);
+      } else {
+        setStep(2);
+      }
     } catch (e) {
       setErr(e.message);
     }
     setTesting(false);
   };
-  const finish = () => {
+
+  // Full setup: Pas 2 = setare parolă nouă
+  const finish = async () => {
     if (!pass || pass.length < 6) {
       setErr("Parola trebuie să aibă minim 6 caractere.");
       return;
     }
-    if (pass !== pass2) {
+    if (mode !== "restore" && pass !== pass2) {
       setErr("Parolele nu coincid.");
       return;
     }
-    sSet("mentor_pass", pass);
-    onDone();
+    const url = sGet("fb_database_url");
+    if (mode === "restore") {
+      // Verify password against Firebase
+      setTesting(true);
+      try {
+        const cfg = await fetch(`${url}/config.json`).then(r => r.json());
+        if (!(cfg !== null && cfg !== void 0 && cfg.pass) || cfg.pass !== pass) {
+          setErr("Parolă incorectă.");
+          setTesting(false);
+          return;
+        }
+        sSet("mentor_pass", pass);
+        onDone();
+      } catch (e) {
+        setErr("Eroare la verificare: " + e.message);
+      }
+      setTesting(false);
+    } else {
+      // Save new password to Firebase config
+      setTesting(true);
+      try {
+        await fetch(`${url}/config.json`, {
+          method: "PUT",
+          headers: {
+            "Content-Type": "application/json"
+          },
+          body: JSON.stringify({
+            pass,
+            createdAt: new Date().toISOString()
+          })
+        });
+        sSet("mentor_pass", pass);
+        onDone();
+      } catch (e) {
+        setErr("Eroare la salvare: " + e.message);
+      }
+      setTesting(false);
+    }
   };
   return /*#__PURE__*/React.createElement("div", {
     style: {
@@ -775,7 +839,62 @@ function SetupWizard({
     variant: "mentor",
     onClick: testAndNext,
     disabled: testing
-  }, testing ? "SE TESTEAZĂ..." : "TESTEAZĂ ȘI CONTINUĂ →")), step === 2 && /*#__PURE__*/React.createElement("div", null, /*#__PURE__*/React.createElement("div", {
+  }, testing ? "SE TESTEAZĂ..." : "TESTEAZĂ ȘI CONTINUĂ →")), step === 2 && /*#__PURE__*/React.createElement("div", null, mode === "restore" ? /*#__PURE__*/React.createElement(React.Fragment, null, /*#__PURE__*/React.createElement("div", {
+    style: {
+      fontSize: 13,
+      fontWeight: 700,
+      color: C.mentorAccent,
+      marginBottom: 8
+    }
+  }, "\u2713 Configurare g\u0103sit\u0103"), /*#__PURE__*/React.createElement("div", {
+    style: {
+      fontSize: 11,
+      color: C.dim,
+      lineHeight: 1.8,
+      marginBottom: 20
+    }
+  }, "Acest Firebase are deja o configurare de mentor. Introdu parola pentru a te autentifica pe acest calculator."), /*#__PURE__*/React.createElement("div", {
+    style: {
+      marginBottom: 20
+    }
+  }, /*#__PURE__*/React.createElement("div", {
+    style: {
+      fontSize: 9,
+      color: C.dim,
+      letterSpacing: 2,
+      marginBottom: 6
+    }
+  }, "PAROLA MENTOR"), /*#__PURE__*/React.createElement(Input, {
+    value: pass,
+    onChange: setPass,
+    type: "password",
+    placeholder: "parola setat\u0103 anterior"
+  })), err && /*#__PURE__*/React.createElement("div", {
+    style: {
+      color: C.red,
+      fontSize: 11,
+      marginBottom: 14,
+      padding: "8px 12px",
+      background: C.red + "10",
+      border: `1px solid ${C.red}30`
+    }
+  }, err), /*#__PURE__*/React.createElement("div", {
+    style: {
+      display: "flex",
+      gap: 10
+    }
+  }, /*#__PURE__*/React.createElement(Btn, {
+    variant: "ghost",
+    onClick: () => {
+      setStep(1);
+      setErr("");
+      setMode("full");
+    }
+  }, "\u2190 \xCENAPOI"), /*#__PURE__*/React.createElement(Btn, {
+    variant: "mentor",
+    onClick: finish,
+    disabled: testing
+  }, testing ? "SE VERIFICĂ..." : "INTRĂ →"))) : /*#__PURE__*/React.createElement(React.Fragment, null, /*#__PURE__*/React.createElement("div", {
     style: {
       fontSize: 13,
       fontWeight: 700,
@@ -789,7 +908,7 @@ function SetupWizard({
       lineHeight: 1.8,
       marginBottom: 20
     }
-  }, "Aceast\u0103 parol\u0103 este unic\u0103 pentru platforma ta. Nu o \xEEmp\u0103rt\u0103\u0219i cu elevii."), /*#__PURE__*/React.createElement("div", {
+  }, "Aceast\u0103 parol\u0103 va fi salvat\u0103 \u0219i \xEEn Firebase \u2014 pe orice calculator nou introduci doar URL-ul \u0219i parola."), /*#__PURE__*/React.createElement("div", {
     style: {
       marginBottom: 12
     }
@@ -843,8 +962,9 @@ function SetupWizard({
     }
   }, "\u2190 \xCENAPOI"), /*#__PURE__*/React.createElement(Btn, {
     variant: "mentor",
-    onClick: finish
-  }, "FINALIZEAZ\u0102 CONFIGURAREA \u2192")))));
+    onClick: finish,
+    disabled: testing
+  }, testing ? "SE SALVEAZĂ..." : "FINALIZEAZĂ →"))))));
 }
 function AuthScreen({
   onLogin
@@ -6267,8 +6387,13 @@ function StorageWarning() {
 function App() {
   const [user, setUser] = useState(null);
   const [setup, setSetup] = useState(!isSetupDone());
-  if (setup) return /*#__PURE__*/React.createElement(SetupWizard, {
-    onDone: () => setSetup(false)
+  // Also show setup if mentor_pass not set (URL exists but password not verified on this PC)
+  const [needsAuth, setNeedsAuth] = useState(isSetupDone() && !getMentorPass());
+  if (setup || needsAuth) return /*#__PURE__*/React.createElement(SetupWizard, {
+    onDone: () => {
+      setSetup(false);
+      setNeedsAuth(false);
+    }
   });
   return /*#__PURE__*/React.createElement(React.Fragment, null, /*#__PURE__*/React.createElement(StorageWarning, null), !user ? /*#__PURE__*/React.createElement(AuthScreen, {
     onLogin: setUser
