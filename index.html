@@ -320,7 +320,13 @@ TRADEURI:\n${trades.map((t, i) => {
     const pl2 = ((tn === null || tn === void 0 ? void 0 : tn.pl2) != null ? tn.pl2 : t.pl2) || "";
     const pl3 = ((tn === null || tn === void 0 ? void 0 : tn.pl3) != null ? tn.pl3 : t.pl3) || "";
     const wd = t.weekday || "";
-    return `${i + 1}. ${t.symbol}|${t.side}|${t.entryPrice}→${t.exitPrice}|Pct:${t.points >= 0 ? "+" : ""}${t.points.toFixed(1)}|P&L:${t.pnl.toFixed(2)}|${t.win ? "WIN" : "LOSS"}${strat ? "|Strategie:" + strat : ""}${risk ? "|Risk:" + risk + "%" : ""}${pl2 ? "|PL2:" + pl2 : ""}${pl3 ? "|PL3:" + pl3 : ""}${wd ? "|Ziua:" + wd : ""}${note ? "|Nota:" + note : ""}`;
+    const sl = (tn === null || tn === void 0 ? void 0 : tn.sl) || t.sl || "";
+    const tp2 = (tn === null || tn === void 0 ? void 0 : tn.tp) || t.tp || "";
+    const plannedRR = ((tn === null || tn === void 0 ? void 0 : tn.plannedRR) != null ? tn.plannedRR : t.plannedRR) || "";
+    const reason = (tn === null || tn === void 0 ? void 0 : tn.entryReason) || t.entryReason || "";
+    const exitT = (tn === null || tn === void 0 ? void 0 : tn.exitType) || t.exitType || "";
+    const plan = (tn === null || tn === void 0 ? void 0 : tn.followedPlan) || t.followedPlan || "";
+    return `${i + 1}. ${t.symbol}|${t.side}|Entry:${t.entryPrice}${sl ? "|SL:" + sl : ""}${tp2 ? "|TP:" + tp2 : ""}${plannedRR ? "|RR_plan:1:" + parseFloat(plannedRR).toFixed(2) : ""}→Exit:${t.exitPrice}|Pct:${t.points >= 0 ? "+" : ""}${t.points.toFixed(1)}|P&L:${t.pnl.toFixed(2)}|${t.win ? "WIN" : "LOSS"}${exitT ? "|Iesire:" + exitT : ""}${plan ? "|Plan:" + plan : ""}${strat ? "|Strat:" + strat : ""}${reason ? "|Motiv:" + reason : ""}${risk ? "|Risk:" + risk + "%" : ""}${pl2 ? "|PL2:" + pl2 : ""}${pl3 ? "|PL3:" + pl3 : ""}${wd ? "|Ziua:" + wd : ""}${note ? "|Nota:" + note : ""}`;
   }).join("\n")}
 STATISTICI: WR ${stats.winRate.toFixed(1)}%, Puncte ${stats.totalPoints >= 0 ? "+" : ""}${stats.totalPoints.toFixed(1)}, P&L ${stats.totalPnl.toFixed(2)}, RR ${stats.rr.toFixed(2)}, ${stats.wins}W/${stats.losses}L
 ${accountSize > 0 ? `Cont: ${accountSize}→${(_stats$accountAfter = stats.accountAfter) === null || _stats$accountAfter === void 0 ? void 0 : _stats$accountAfter.toFixed(2)} (${stats.accountPct >= 0 ? "+" : ""}${(_stats$accountPct = stats.accountPct) === null || _stats$accountPct === void 0 ? void 0 : _stats$accountPct.toFixed(2)}%)` : ""}
@@ -2053,7 +2059,12 @@ function StudentView({
     entryPrice: "",
     exitPrice: "",
     qty: "0.1",
+    sl: "",
+    tp: "",
     strategy: "",
+    entryReason: "",
+    exitType: "",
+    followedPlan: "",
     riskPct: "",
     pl2: "",
     pl3: ""
@@ -2149,6 +2160,14 @@ function StudentView({
     const points = manualDraft.side === "BUY" ? xp - ep : ep - xp;
     const weekdays = ['Duminică', 'Luni', 'Marți', 'Miercuri', 'Joi', 'Vineri', 'Sâmbătă'];
     const weekday = weekdays[new Date().getDay()];
+    const slV = parseFloat(manualDraft.sl) || null,
+      tpV = parseFloat(manualDraft.tp) || null;
+    let plannedRR = null;
+    if (slV && tpV && ep) {
+      const r2 = manualDraft.side === "BUY" ? ep - slV : slV - ep,
+        rw2 = manualDraft.side === "BUY" ? tpV - ep : ep - tpV;
+      if (r2 > 0) plannedRR = rw2 / r2;
+    }
     const t = {
       symbol: manualDraft.symbol.toUpperCase() || "US30",
       side: manualDraft.side,
@@ -2164,13 +2183,24 @@ function StudentView({
       riskPct: parseFloat(manualDraft.riskPct) || null,
       pl2: parseFloat(manualDraft.pl2) || null,
       pl3: parseFloat(manualDraft.pl3) || null,
-      weekday
+      weekday,
+      sl: slV,
+      tp: tpV,
+      plannedRR,
+      entryReason: manualDraft.entryReason || "",
+      exitType: manualDraft.exitType || "",
+      followedPlan: manualDraft.followedPlan || ""
     };
     setManualTrades(prev => [...prev, t]);
     setManualDraft(d => ({
       ...d,
       entryPrice: "",
-      exitPrice: ""
+      exitPrice: "",
+      sl: "",
+      tp: "",
+      entryReason: "",
+      exitType: "",
+      followedPlan: ""
     }));
   };
   const removeManualTrade = idx => setManualTrades(prev => prev.filter((_, i) => i !== idx));
@@ -2693,24 +2723,40 @@ function StudentView({
   }, "+ ADAUG\u0102"))), /*#__PURE__*/React.createElement("div", {
     style: {
       display: "grid",
-      gridTemplateColumns: "2fr 1fr 1fr 1fr",
+      gridTemplateColumns: "1fr 1fr 1fr 1fr",
       gap: 10,
-      marginBottom: 16
+      marginBottom: 10
     }
   }, /*#__PURE__*/React.createElement("div", null, /*#__PURE__*/React.createElement("div", {
     style: {
       fontSize: 9,
-      color: C.dim,
+      color: C.red,
       letterSpacing: 2,
       marginBottom: 6
     }
-  }, "STRATEGIE"), /*#__PURE__*/React.createElement(Input, {
-    value: manualDraft.strategy,
+  }, "STOP LOSS"), /*#__PURE__*/React.createElement(Input, {
+    value: manualDraft.sl,
     onChange: v => setManualDraft(d => ({
       ...d,
-      strategy: v
+      sl: v
     })),
-    placeholder: "ex: Breakout, Supply/Demand..."
+    placeholder: "pre\u021B SL",
+    type: "number"
+  })), /*#__PURE__*/React.createElement("div", null, /*#__PURE__*/React.createElement("div", {
+    style: {
+      fontSize: 9,
+      color: C.green,
+      letterSpacing: 2,
+      marginBottom: 6
+    }
+  }, "TAKE PROFIT"), /*#__PURE__*/React.createElement(Input, {
+    value: manualDraft.tp,
+    onChange: v => setManualDraft(d => ({
+      ...d,
+      tp: v
+    })),
+    placeholder: "pre\u021B TP",
+    type: "number"
   })), /*#__PURE__*/React.createElement("div", null, /*#__PURE__*/React.createElement("div", {
     style: {
       fontSize: 9,
@@ -2726,6 +2772,77 @@ function StudentView({
     })),
     placeholder: "ex: 1.5",
     type: "number"
+  })), /*#__PURE__*/React.createElement("div", {
+    style: {
+      display: "flex",
+      alignItems: "flex-end",
+      paddingBottom: 2
+    }
+  }, manualDraft.sl && manualDraft.tp && manualDraft.entryPrice && (() => {
+    const e2 = parseFloat(manualDraft.entryPrice),
+      s2 = parseFloat(manualDraft.sl),
+      t2 = parseFloat(manualDraft.tp);
+    const r2 = manualDraft.side === "BUY" ? e2 - s2 : s2 - e2,
+      rw2 = manualDraft.side === "BUY" ? t2 - e2 : e2 - t2;
+    const rr2 = r2 > 0 ? rw2 / r2 : null;
+    return rr2 ? /*#__PURE__*/React.createElement("div", {
+      style: {
+        fontSize: 11,
+        padding: "8px 12px",
+        border: `1px solid ${rr2 >= 1.5 ? C.green : rr2 >= 1 ? C.gold : C.red}40`,
+        color: rr2 >= 1.5 ? C.green : rr2 >= 1 ? C.gold : C.red
+      }
+    }, "RR Plan: 1:", rr2.toFixed(2)) : null;
+  })())), /*#__PURE__*/React.createElement("div", {
+    style: {
+      display: "grid",
+      gridTemplateColumns: "1fr 2fr 1fr 1fr",
+      gap: 10,
+      marginBottom: 10
+    }
+  }, /*#__PURE__*/React.createElement("div", null, /*#__PURE__*/React.createElement("div", {
+    style: {
+      fontSize: 9,
+      color: C.dim,
+      letterSpacing: 2,
+      marginBottom: 6
+    }
+  }, "STRATEGIE"), /*#__PURE__*/React.createElement("select", {
+    value: manualDraft.strategy,
+    onChange: e => setManualDraft(d => ({
+      ...d,
+      strategy: e.target.value
+    })),
+    style: {
+      width: "100%",
+      background: C.surface,
+      border: `1px solid ${C.border}`,
+      color: manualDraft.strategy ? C.text : C.dim,
+      fontFamily: font,
+      fontSize: 11,
+      padding: "10px",
+      borderRadius: 2,
+      outline: "none"
+    }
+  }, /*#__PURE__*/React.createElement("option", {
+    value: ""
+  }, "\u2014 selecteaz\u0103 \u2014"), ["KC Setup", "Red Line", "RSI Divergence", "Breakout", "Supply/Demand", "VWAP", "Trend Follow", "Altul"].map(s => /*#__PURE__*/React.createElement("option", {
+    key: s,
+    value: s
+  }, s)))), /*#__PURE__*/React.createElement("div", null, /*#__PURE__*/React.createElement("div", {
+    style: {
+      fontSize: 9,
+      color: C.dim,
+      letterSpacing: 2,
+      marginBottom: 6
+    }
+  }, "MOTIV INTRARE"), /*#__PURE__*/React.createElement(Input, {
+    value: manualDraft.entryReason,
+    onChange: v => setManualDraft(d => ({
+      ...d,
+      entryReason: v
+    })),
+    placeholder: "ex: retest suport, confirmare H1, FVG..."
   })), /*#__PURE__*/React.createElement("div", null, /*#__PURE__*/React.createElement("div", {
     style: {
       fontSize: 9,
@@ -2733,13 +2850,88 @@ function StudentView({
       letterSpacing: 2,
       marginBottom: 6
     }
-  }, "P/L IE\u0218IRE 2 ($)"), /*#__PURE__*/React.createElement(Input, {
+  }, "TIP IE\u0218IRE"), /*#__PURE__*/React.createElement("select", {
+    value: manualDraft.exitType,
+    onChange: e => setManualDraft(d => ({
+      ...d,
+      exitType: e.target.value
+    })),
+    style: {
+      width: "100%",
+      background: C.surface,
+      border: `1px solid ${C.border}`,
+      color: manualDraft.exitType ? C.text : C.dim,
+      fontFamily: font,
+      fontSize: 11,
+      padding: "10px",
+      borderRadius: 2,
+      outline: "none"
+    }
+  }, /*#__PURE__*/React.createElement("option", {
+    value: ""
+  }, "\u2014 ie\u0219ire \u2014"), /*#__PURE__*/React.createElement("option", {
+    value: "TP Atins"
+  }, "\u2713 TP Atins"), /*#__PURE__*/React.createElement("option", {
+    value: "SL Atins"
+  }, "\u2717 SL Atins"), /*#__PURE__*/React.createElement("option", {
+    value: "Manual Profit"
+  }, "\u21E7 Manual Profit"), /*#__PURE__*/React.createElement("option", {
+    value: "Manual Pierdere"
+  }, "\u21E9 Manual Pierdere"), /*#__PURE__*/React.createElement("option", {
+    value: "Breakeven"
+  }, "\u25CC Breakeven"))), /*#__PURE__*/React.createElement("div", null, /*#__PURE__*/React.createElement("div", {
+    style: {
+      fontSize: 9,
+      color: C.dim,
+      letterSpacing: 2,
+      marginBottom: 6
+    }
+  }, "PLAN RESPECTAT?"), /*#__PURE__*/React.createElement("select", {
+    value: manualDraft.followedPlan,
+    onChange: e => setManualDraft(d => ({
+      ...d,
+      followedPlan: e.target.value
+    })),
+    style: {
+      width: "100%",
+      background: C.surface,
+      border: `1px solid ${C.border}`,
+      color: manualDraft.followedPlan ? C.text : C.dim,
+      fontFamily: font,
+      fontSize: 11,
+      padding: "10px",
+      borderRadius: 2,
+      outline: "none"
+    }
+  }, /*#__PURE__*/React.createElement("option", {
+    value: ""
+  }, "\u2014 plan \u2014"), /*#__PURE__*/React.createElement("option", {
+    value: "Da"
+  }, "\u2713 Da"), /*#__PURE__*/React.createElement("option", {
+    value: "Partial"
+  }, "\u25CC Partial"), /*#__PURE__*/React.createElement("option", {
+    value: "Nu"
+  }, "\u2717 Nu")))), /*#__PURE__*/React.createElement("div", {
+    style: {
+      display: "grid",
+      gridTemplateColumns: "1fr 1fr 6fr",
+      gap: 10,
+      marginBottom: 16
+    }
+  }, /*#__PURE__*/React.createElement("div", null, /*#__PURE__*/React.createElement("div", {
+    style: {
+      fontSize: 9,
+      color: C.dim,
+      letterSpacing: 2,
+      marginBottom: 6
+    }
+  }, "P/L IESIRE 2 ($)"), /*#__PURE__*/React.createElement(Input, {
     value: manualDraft.pl2,
     onChange: v => setManualDraft(d => ({
       ...d,
       pl2: v
     })),
-    placeholder: "op\u021Bional",
+    placeholder: "optional",
     type: "number"
   })), /*#__PURE__*/React.createElement("div", null, /*#__PURE__*/React.createElement("div", {
     style: {
@@ -2748,13 +2940,13 @@ function StudentView({
       letterSpacing: 2,
       marginBottom: 6
     }
-  }, "P/L IE\u0218IRE 3 ($)"), /*#__PURE__*/React.createElement(Input, {
+  }, "P/L IESIRE 3 ($)"), /*#__PURE__*/React.createElement(Input, {
     value: manualDraft.pl3,
     onChange: v => setManualDraft(d => ({
       ...d,
       pl3: v
     })),
-    placeholder: "op\u021Bional",
+    placeholder: "optional",
     type: "number"
   }))), manualDraft.entryPrice && manualDraft.exitPrice && (() => {
     const ep = parseFloat(manualDraft.entryPrice),
@@ -2816,17 +3008,32 @@ function StudentView({
       fontSize: 10,
       color: C.mentorAccent + "90"
     }
-  }, t.strategy), t.riskPct && /*#__PURE__*/React.createElement("span", {
+  }, t.strategy), t.sl && /*#__PURE__*/React.createElement("span", {
+    style: {
+      fontSize: 10,
+      color: C.red + "80"
+    }
+  }, "SL:", t.sl), t.tp && /*#__PURE__*/React.createElement("span", {
+    style: {
+      fontSize: 10,
+      color: C.green + "80"
+    }
+  }, "TP:", t.tp), t.plannedRR && /*#__PURE__*/React.createElement("span", {
+    style: {
+      fontSize: 10,
+      color: C.gold + "90"
+    }
+  }, "RR:1:", t.plannedRR.toFixed(1)), t.followedPlan && /*#__PURE__*/React.createElement("span", {
+    style: {
+      fontSize: 10,
+      color: t.followedPlan === "Da" ? C.green : t.followedPlan === "Nu" ? C.red : C.gold
+    }
+  }, t.followedPlan === "Da" ? "plan OK" : t.followedPlan === "Nu" ? "plan X" : "plan ~"), t.riskPct && /*#__PURE__*/React.createElement("span", {
     style: {
       fontSize: 10,
       color: C.gold + "80"
     }
-  }, t.riskPct, "%R"), t.weekday && /*#__PURE__*/React.createElement("span", {
-    style: {
-      fontSize: 10,
-      color: C.dim + "70"
-    }
-  }, t.weekday)), /*#__PURE__*/React.createElement("div", {
+  }, t.riskPct, "%R")), /*#__PURE__*/React.createElement("div", {
     style: {
       display: "flex",
       gap: 12,
@@ -3073,7 +3280,7 @@ function StudentView({
       marginBottom: 20
     }
   }, /*#__PURE__*/React.createElement(SectionTitle, null, "Tradeuri detectate"), trades.map((t, i) => {
-    var _tradeNotes$i, _tradeNotes$i2, _tradeNotes$i3, _tradeNotes$i4, _tradeNotes$i5;
+    var _tradeNotes$i, _tradeNotes$i2, _tradeNotes$i3, _tradeNotes$i4, _tradeNotes$i5, _tradeNotes$i8, _tradeNotes$i9, _tradeNotes$i0, _tradeNotes$i1, _tradeNotes$i10, _tradeNotes$i11, _tradeNotes$i12;
     return /*#__PURE__*/React.createElement("div", {
       key: i,
       style: {
@@ -3153,27 +3360,58 @@ function StudentView({
     }, /*#__PURE__*/React.createElement("div", {
       style: {
         display: "grid",
-        gridTemplateColumns: "2fr 1fr 1fr 1fr",
+        gridTemplateColumns: "1fr 1fr 1fr 1fr",
         gap: 10,
-        marginBottom: 12
+        marginBottom: 10
       }
     }, /*#__PURE__*/React.createElement("div", null, /*#__PURE__*/React.createElement("div", {
       style: {
         fontSize: 9,
-        color: C.dim,
+        color: C.red,
         letterSpacing: 2,
         marginBottom: 5
       }
-    }, "STRATEGIE"), /*#__PURE__*/React.createElement("input", {
-      value: ((_tradeNotes$i = tradeNotes[i]) === null || _tradeNotes$i === void 0 ? void 0 : _tradeNotes$i.strategy) || t.strategy || "",
+    }, "STOP LOSS"), /*#__PURE__*/React.createElement("input", {
+      value: ((_tradeNotes$i = tradeNotes[i]) === null || _tradeNotes$i === void 0 ? void 0 : _tradeNotes$i.sl) != null ? tradeNotes[i].sl : t.sl || "",
       onChange: e => setTradeNotes(p => ({
         ...p,
         [i]: {
           ...(p[i] || {}),
-          strategy: e.target.value
+          sl: e.target.value
         }
       })),
-      placeholder: "ex: Breakout, Supply/Demand...",
+      placeholder: "pret SL",
+      type: "number",
+      style: {
+        width: "100%",
+        background: "transparent",
+        border: `1px solid ${C.border}`,
+        color: C.text,
+        fontFamily: font,
+        fontSize: 11,
+        padding: "8px 10px",
+        outline: "none",
+        boxSizing: "border-box",
+        borderRadius: 2
+      }
+    })), /*#__PURE__*/React.createElement("div", null, /*#__PURE__*/React.createElement("div", {
+      style: {
+        fontSize: 9,
+        color: C.green,
+        letterSpacing: 2,
+        marginBottom: 5
+      }
+    }, "TAKE PROFIT"), /*#__PURE__*/React.createElement("input", {
+      value: ((_tradeNotes$i2 = tradeNotes[i]) === null || _tradeNotes$i2 === void 0 ? void 0 : _tradeNotes$i2.tp) != null ? tradeNotes[i].tp : t.tp || "",
+      onChange: e => setTradeNotes(p => ({
+        ...p,
+        [i]: {
+          ...(p[i] || {}),
+          tp: e.target.value
+        }
+      })),
+      placeholder: "pret TP",
+      type: "number",
       style: {
         width: "100%",
         background: "transparent",
@@ -3194,7 +3432,7 @@ function StudentView({
         marginBottom: 5
       }
     }, "RISK % CONT"), /*#__PURE__*/React.createElement("input", {
-      value: ((_tradeNotes$i2 = tradeNotes[i]) === null || _tradeNotes$i2 === void 0 ? void 0 : _tradeNotes$i2.riskPct) != null ? tradeNotes[i].riskPct : t.riskPct || "",
+      value: ((_tradeNotes$i3 = tradeNotes[i]) === null || _tradeNotes$i3 === void 0 ? void 0 : _tradeNotes$i3.riskPct) != null ? tradeNotes[i].riskPct : t.riskPct || "",
       onChange: e => setTradeNotes(p => ({
         ...p,
         [i]: {
@@ -3216,15 +3454,188 @@ function StudentView({
         boxSizing: "border-box",
         borderRadius: 2
       }
-    })), /*#__PURE__*/React.createElement("div", null, /*#__PURE__*/React.createElement("div", {
+    })), /*#__PURE__*/React.createElement("div", {
+      style: {
+        display: "flex",
+        alignItems: "flex-end",
+        paddingBottom: 2
+      }
+    }, (((_tradeNotes$i4 = tradeNotes[i]) === null || _tradeNotes$i4 === void 0 ? void 0 : _tradeNotes$i4.sl) || t.sl) && (((_tradeNotes$i5 = tradeNotes[i]) === null || _tradeNotes$i5 === void 0 ? void 0 : _tradeNotes$i5.tp) || t.tp) && ((_tradeNotes$i6, _tradeNotes$i7) => {
+      const e2 = t.entryPrice,
+        s2 = parseFloat(((_tradeNotes$i6 = tradeNotes[i]) === null || _tradeNotes$i6 === void 0 ? void 0 : _tradeNotes$i6.sl) || t.sl),
+        t2 = parseFloat(((_tradeNotes$i7 = tradeNotes[i]) === null || _tradeNotes$i7 === void 0 ? void 0 : _tradeNotes$i7.tp) || t.tp);
+      const r2 = t.side === "BUY" ? e2 - s2 : s2 - e2,
+        rw2 = t.side === "BUY" ? t2 - e2 : e2 - t2;
+      const rr2 = r2 > 0 ? rw2 / r2 : null;
+      return rr2 ? /*#__PURE__*/React.createElement("div", {
+        style: {
+          fontSize: 11,
+          padding: "6px 10px",
+          border: `1px solid ${rr2 >= 1.5 ? C.green : rr2 >= 1 ? C.gold : C.red}40`,
+          color: rr2 >= 1.5 ? C.green : rr2 >= 1 ? C.gold : C.red
+        }
+      }, "RR Plan: 1:", rr2.toFixed(2)) : null;
+    })())), /*#__PURE__*/React.createElement("div", {
+      style: {
+        display: "grid",
+        gridTemplateColumns: "1fr 2fr",
+        gap: 10,
+        marginBottom: 10
+      }
+    }, /*#__PURE__*/React.createElement("div", null, /*#__PURE__*/React.createElement("div", {
       style: {
         fontSize: 9,
         color: C.dim,
         letterSpacing: 2,
         marginBottom: 5
       }
-    }, "P/L IE\u0218IRE 2 ($)"), /*#__PURE__*/React.createElement("input", {
-      value: ((_tradeNotes$i3 = tradeNotes[i]) === null || _tradeNotes$i3 === void 0 ? void 0 : _tradeNotes$i3.pl2) != null ? tradeNotes[i].pl2 : t.pl2 || "",
+    }, "STRATEGIE"), /*#__PURE__*/React.createElement("select", {
+      value: ((_tradeNotes$i8 = tradeNotes[i]) === null || _tradeNotes$i8 === void 0 ? void 0 : _tradeNotes$i8.strategy) || t.strategy || "",
+      onChange: e => setTradeNotes(p => ({
+        ...p,
+        [i]: {
+          ...(p[i] || {}),
+          strategy: e.target.value
+        }
+      })),
+      style: {
+        width: "100%",
+        background: "transparent",
+        border: `1px solid ${C.border}`,
+        color: C.text,
+        fontFamily: font,
+        fontSize: 11,
+        padding: "8px 10px",
+        outline: "none",
+        boxSizing: "border-box",
+        borderRadius: 2
+      }
+    }, /*#__PURE__*/React.createElement("option", {
+      value: ""
+    }, "\u2014"), ["KC Setup", "Red Line", "RSI Divergence", "Breakout", "Supply/Demand", "VWAP", "Trend Follow", "Altul"].map(s => /*#__PURE__*/React.createElement("option", {
+      key: s,
+      value: s
+    }, s)))), /*#__PURE__*/React.createElement("div", null, /*#__PURE__*/React.createElement("div", {
+      style: {
+        fontSize: 9,
+        color: C.dim,
+        letterSpacing: 2,
+        marginBottom: 5
+      }
+    }, "MOTIV INTRARE"), /*#__PURE__*/React.createElement("input", {
+      value: ((_tradeNotes$i9 = tradeNotes[i]) === null || _tradeNotes$i9 === void 0 ? void 0 : _tradeNotes$i9.entryReason) != null ? tradeNotes[i].entryReason : t.entryReason || "",
+      onChange: e => setTradeNotes(p => ({
+        ...p,
+        [i]: {
+          ...(p[i] || {}),
+          entryReason: e.target.value
+        }
+      })),
+      placeholder: "retest suport, confirmare H1, FVG...",
+      style: {
+        width: "100%",
+        background: "transparent",
+        border: `1px solid ${C.border}`,
+        color: C.text,
+        fontFamily: font,
+        fontSize: 11,
+        padding: "8px 10px",
+        outline: "none",
+        boxSizing: "border-box",
+        borderRadius: 2
+      }
+    }))), /*#__PURE__*/React.createElement("div", {
+      style: {
+        display: "grid",
+        gridTemplateColumns: "1fr 1fr 1fr 1fr",
+        gap: 10,
+        marginBottom: 12
+      }
+    }, /*#__PURE__*/React.createElement("div", null, /*#__PURE__*/React.createElement("div", {
+      style: {
+        fontSize: 9,
+        color: C.dim,
+        letterSpacing: 2,
+        marginBottom: 5
+      }
+    }, "TIP IESIRE"), /*#__PURE__*/React.createElement("select", {
+      value: ((_tradeNotes$i0 = tradeNotes[i]) === null || _tradeNotes$i0 === void 0 ? void 0 : _tradeNotes$i0.exitType) || t.exitType || "",
+      onChange: e => setTradeNotes(p => ({
+        ...p,
+        [i]: {
+          ...(p[i] || {}),
+          exitType: e.target.value
+        }
+      })),
+      style: {
+        width: "100%",
+        background: "transparent",
+        border: `1px solid ${C.border}`,
+        color: C.text,
+        fontFamily: font,
+        fontSize: 11,
+        padding: "8px 10px",
+        outline: "none",
+        boxSizing: "border-box",
+        borderRadius: 2
+      }
+    }, /*#__PURE__*/React.createElement("option", {
+      value: ""
+    }, "\u2014"), /*#__PURE__*/React.createElement("option", {
+      value: "TP Atins"
+    }, "TP Atins"), /*#__PURE__*/React.createElement("option", {
+      value: "SL Atins"
+    }, "SL Atins"), /*#__PURE__*/React.createElement("option", {
+      value: "Manual Profit"
+    }, "Manual Profit"), /*#__PURE__*/React.createElement("option", {
+      value: "Manual Pierdere"
+    }, "Manual Pierdere"), /*#__PURE__*/React.createElement("option", {
+      value: "Breakeven"
+    }, "Breakeven"))), /*#__PURE__*/React.createElement("div", null, /*#__PURE__*/React.createElement("div", {
+      style: {
+        fontSize: 9,
+        color: C.dim,
+        letterSpacing: 2,
+        marginBottom: 5
+      }
+    }, "PLAN RESPECTAT?"), /*#__PURE__*/React.createElement("select", {
+      value: ((_tradeNotes$i1 = tradeNotes[i]) === null || _tradeNotes$i1 === void 0 ? void 0 : _tradeNotes$i1.followedPlan) || t.followedPlan || "",
+      onChange: e => setTradeNotes(p => ({
+        ...p,
+        [i]: {
+          ...(p[i] || {}),
+          followedPlan: e.target.value
+        }
+      })),
+      style: {
+        width: "100%",
+        background: "transparent",
+        border: `1px solid ${C.border}`,
+        color: C.text,
+        fontFamily: font,
+        fontSize: 11,
+        padding: "8px 10px",
+        outline: "none",
+        boxSizing: "border-box",
+        borderRadius: 2
+      }
+    }, /*#__PURE__*/React.createElement("option", {
+      value: ""
+    }, "\u2014"), /*#__PURE__*/React.createElement("option", {
+      value: "Da"
+    }, "Da"), /*#__PURE__*/React.createElement("option", {
+      value: "Partial"
+    }, "Partial"), /*#__PURE__*/React.createElement("option", {
+      value: "Nu"
+    }, "Nu"))), /*#__PURE__*/React.createElement("div", null, /*#__PURE__*/React.createElement("div", {
+      style: {
+        fontSize: 9,
+        color: C.dim,
+        letterSpacing: 2,
+        marginBottom: 5
+      }
+    }, "P/L IESIRE 2"), /*#__PURE__*/React.createElement("input", {
+      value: ((_tradeNotes$i10 = tradeNotes[i]) === null || _tradeNotes$i10 === void 0 ? void 0 : _tradeNotes$i10.pl2) != null ? tradeNotes[i].pl2 : t.pl2 || "",
       onChange: e => setTradeNotes(p => ({
         ...p,
         [i]: {
@@ -3232,7 +3643,7 @@ function StudentView({
           pl2: e.target.value
         }
       })),
-      placeholder: "op\u021Bional",
+      placeholder: "optional",
       type: "number",
       style: {
         width: "100%",
@@ -3253,8 +3664,8 @@ function StudentView({
         letterSpacing: 2,
         marginBottom: 5
       }
-    }, "P/L IE\u0218IRE 3 ($)"), /*#__PURE__*/React.createElement("input", {
-      value: ((_tradeNotes$i4 = tradeNotes[i]) === null || _tradeNotes$i4 === void 0 ? void 0 : _tradeNotes$i4.pl3) != null ? tradeNotes[i].pl3 : t.pl3 || "",
+    }, "P/L IESIRE 3"), /*#__PURE__*/React.createElement("input", {
+      value: ((_tradeNotes$i11 = tradeNotes[i]) === null || _tradeNotes$i11 === void 0 ? void 0 : _tradeNotes$i11.pl3) != null ? tradeNotes[i].pl3 : t.pl3 || "",
       onChange: e => setTradeNotes(p => ({
         ...p,
         [i]: {
@@ -3262,7 +3673,7 @@ function StudentView({
           pl3: e.target.value
         }
       })),
-      placeholder: "op\u021Bional",
+      placeholder: "optional",
       type: "number",
       style: {
         width: "100%",
@@ -3283,8 +3694,8 @@ function StudentView({
         letterSpacing: 2,
         marginBottom: 5
       }
-    }, "NOT\u0102 LIBER\u0102"), /*#__PURE__*/React.createElement("textarea", {
-      value: ((_tradeNotes$i5 = tradeNotes[i]) === null || _tradeNotes$i5 === void 0 ? void 0 : _tradeNotes$i5.note) || tradeNotes[i] || "",
+    }, "NOTA LIBERA"), /*#__PURE__*/React.createElement("textarea", {
+      value: ((_tradeNotes$i12 = tradeNotes[i]) === null || _tradeNotes$i12 === void 0 ? void 0 : _tradeNotes$i12.note) || tradeNotes[i] || "",
       onChange: e => setTradeNotes(p => ({
         ...p,
         [i]: {
@@ -3292,7 +3703,7 @@ function StudentView({
           note: e.target.value
         }
       })),
-      placeholder: "De ce ai intrat? Setup-ul? Erori? Emo\u021Bii...",
+      placeholder: "Alte observatii...",
       style: {
         width: "100%",
         background: "transparent",
