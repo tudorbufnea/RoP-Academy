@@ -99,6 +99,57 @@ function restoreAllData(data) {
   });
 }
 
+// ─── Firebase Realtime Database (REST API — no SDK needed) ────────────────────
+const FB = {
+  base: "https://rop-tudor-default-rtdb.europe-west1.firebasedatabase.app",
+  async get(path) {
+    const r = await fetch(`${FB.base}/${path}.json`);
+    if (!r.ok) throw new Error(`FB get error ${r.status}`);
+    return r.json();
+  },
+  async set(path, data) {
+    const r = await fetch(`${FB.base}/${path}.json`, {
+      method: "PUT",
+      headers: {
+        "Content-Type": "application/json"
+      },
+      body: JSON.stringify(data)
+    });
+    if (!r.ok) throw new Error(`FB set error ${r.status}`);
+    return r.json();
+  },
+  async patch(path, data) {
+    const r = await fetch(`${FB.base}/${path}.json`, {
+      method: "PATCH",
+      headers: {
+        "Content-Type": "application/json"
+      },
+      body: JSON.stringify(data)
+    });
+    if (!r.ok) throw new Error(`FB patch error ${r.status}`);
+    return r.json();
+  },
+  // Real-time listener via SSE
+  listen(path, cb) {
+    const es = new EventSource(`${FB.base}/${path}.json?accept=text/event-stream`);
+    es.addEventListener("put", e => {
+      try {
+        cb(JSON.parse(e.data));
+      } catch (_) {}
+    });
+    es.addEventListener("patch", e => {
+      try {
+        cb(JSON.parse(e.data));
+      } catch (_) {}
+    });
+    es.onerror = () => {}; // silently reconnect
+    return es; // caller should call es.close() on cleanup
+  }
+};
+function fbSlug(name) {
+  return name.toLowerCase().replace(/\s+/g, "_").replace(/[.#$\[\]]/g, "");
+}
+
 // ─── Config ─────────────────────────────────────────────────────────────────
 const DEFAULT_PASS = "mentor2025";
 function getMentorPass() {
@@ -1720,6 +1771,19 @@ function StudentView({
   });
   const fileRef = useRef();
   const slug = user.name.toLowerCase().replace(/\s+/g, "_");
+
+  // Push all sessions + profile to Firebase after every save
+  const pushToFirebase = async (name, sessions, acc) => {
+    try {
+      const fbKey = fbSlug(name);
+      await FB.set(`students/${fbKey}`, {
+        name,
+        sessions,
+        account: acc || 0,
+        lastUpdate: new Date().toISOString()
+      });
+    } catch (e) {/* silently ignore — localStorage already saved */}
+  };
   useEffect(() => {
     const hist = sGet(`sessions__${slug}`);
     const obj = sGet(`objectives__${slug}`);
@@ -1732,6 +1796,17 @@ function StudentView({
     }
     const roster = sGet("roster") || [];
     if (!roster.includes(user.name)) sSet("roster", [...roster, user.name]);
+    // Self-register in Firebase (creates slot if not exists)
+    FB.get(`students/${fbSlug(user.name)}`).then(existing => {
+      if (!existing) {
+        FB.set(`students/${fbSlug(user.name)}`, {
+          name: user.name,
+          sessions: [],
+          account: acc || 0,
+          lastUpdate: new Date().toISOString()
+        }).catch(() => {});
+      }
+    }).catch(() => {});
   }, []);
 
   // Deduplicare: un trade e identic daca symbol+side+entryPrice+exitPrice+qty coincid
@@ -1852,6 +1927,7 @@ function StudentView({
       const newHist = [...history, session].slice(-60);
       setHistory(newHist);
       sSet(`sessions__${slug}`, newHist);
+      pushToFirebase(user.name, newHist, acc);
       setStep("report");
     } catch (e) {
       setErr("Eroare AI: " + e.message);
@@ -1876,6 +1952,7 @@ function StudentView({
     const newHist = [...history, session].slice(-60);
     setHistory(newHist);
     sSet(`sessions__${slug}`, newHist);
+    pushToFirebase(user.name, newHist, acc);
     reset();
     setMainTab("history");
   };
@@ -3716,25 +3793,114 @@ function MentorView({
     schedule();
     return () => clearTimeout(backupTimerRef.current);
   }, [autoBackupTime, doBackup]);
-  const loadAll = () => {
+  const [fbStatus, setFbStatus] = useState(""); // "syncing"|"ok"|"error"
+  const fbListenerRef = useRef(null);
+  const mergeFirebaseData = (fbStudents, localRoster, localData) => {
+    if (!fbStudents) return {
+      roster: localRoster,
+      data: localData
+    };
+    const merged = {
+      ...localData
+    };
+    const allNames = new Set(localRoster);
+    Object.values(fbStudents).forEach(student => {
+      if (!(student !== null && student !== void 0 && student.name)) return;
+      allNames.add(student.name);
+      const existing = merged[student.name] || {};
+      const fbSessions = student.sessions || [];
+      const localSessions = existing.sessions || [];
+      // Use whichever has more sessions
+      const sessions = fbSessions.length >= localSessions.length ? fbSessions : localSessions;
+      merged[student.name] = {
+        ...existing,
+        sessions,
+        account: student.account || existing.account || 0,
+        objectives: existing.objectives || "",
+        feedbacks: existing.feedbacks || {},
+        lessons: existing.lessons || {}
+      };
+      // Also update localStorage
+      const slug = student.name.toLowerCase().replace(/\s+/g, "_");
+      sSet(`sessions__${slug}`, sessions);
+      if (!localRoster.includes(student.name)) {
+        const newRoster = [...localRoster, student.name];
+        sSet("roster", newRoster);
+      }
+    });
+    return {
+      roster: [...allNames],
+      data: merged
+    };
+  };
+  const loadAll = async () => {
     setLoading(true);
-    const roster = sGet("roster") || [];
+    setFbStatus("syncing");
+    const localRoster = sGet("roster") || [];
     const courseData = sGet("course") || [];
-    setStudents(roster);
     setCourse(courseData);
-    const data = {};
-    roster.forEach(name => {
+    const localData = {};
+    localRoster.forEach(name => {
       const slug = name.toLowerCase().replace(/\s+/g, "_");
-      data[name] = {
+      localData[name] = {
         sessions: sGet(`sessions__${slug}`) || [],
         objectives: sGet(`objectives__${slug}`) || "",
         feedbacks: sGet(`feedbacks__${slug}`) || {},
         lessons: sGet(`lessons__${slug}`) || {}
       };
     });
-    setStudentData(data);
+    try {
+      const fbStudents = await FB.get("students");
+      const {
+        roster,
+        data
+      } = mergeFirebaseData(fbStudents, localRoster, localData);
+      setStudents([...roster]);
+      setStudentData(data);
+      setFbStatus("ok");
+    } catch (e) {
+      setStudents(localRoster);
+      setStudentData(localData);
+      setFbStatus("error");
+    }
     setLoading(false);
   };
+
+  // Real-time listener — updates mentor UI when any student saves
+  useEffect(() => {
+    if (fbListenerRef.current) fbListenerRef.current.close();
+    fbListenerRef.current = FB.listen("students", event => {
+      if (!(event !== null && event !== void 0 && event.data)) return;
+      setStudentData(prev => {
+        var _event$path;
+        const updated = {
+          ...prev
+        };
+        const newStudentsData = event.path === "/" ? event.data : {
+          [(_event$path = event.path) === null || _event$path === void 0 ? void 0 : _event$path.replace("/", "")]: event.data
+        };
+        if (!newStudentsData) return prev;
+        Object.values(newStudentsData).forEach(student => {
+          if (!(student !== null && student !== void 0 && student.name)) return;
+          const sessions = student.sessions || [];
+          const existing = updated[student.name] || {};
+          updated[student.name] = {
+            ...existing,
+            sessions,
+            account: student.account || 0
+          };
+          const slug = student.name.toLowerCase().replace(/\s+/g, "_");
+          sSet(`sessions__${slug}`, sessions);
+          // Add to roster if new student
+          setStudents(r => r.includes(student.name) ? r : [...r, student.name]);
+        });
+        return updated;
+      });
+    });
+    return () => {
+      if (fbListenerRef.current) fbListenerRef.current.close();
+    };
+  }, []);
   useEffect(() => {
     loadAll();
   }, []);
@@ -4014,7 +4180,23 @@ function MentorView({
       gap: 12,
       alignItems: "center"
     }
-  }, /*#__PURE__*/React.createElement(Btn, {
+  }, fbStatus === "syncing" && /*#__PURE__*/React.createElement("span", {
+    style: {
+      fontSize: 10,
+      color: C.gold
+    }
+  }, "\u27F3 sync..."), fbStatus === "ok" && /*#__PURE__*/React.createElement("span", {
+    style: {
+      fontSize: 10,
+      color: C.green
+    }
+  }, "\u25CF live"), fbStatus === "error" && /*#__PURE__*/React.createElement("span", {
+    style: {
+      fontSize: 10,
+      color: C.red
+    },
+    title: "Firebase offline"
+  }, "\u26A0 local"), /*#__PURE__*/React.createElement(Btn, {
     variant: "ghost",
     small: true,
     onClick: loadAll
