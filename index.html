@@ -6280,7 +6280,24 @@ function MentorView({
       color: C.text,
       marginBottom: 6
     }
-  }, "Set\u0103ri")), /*#__PURE__*/React.createElement(PasswordManager, null), /*#__PURE__*/React.createElement(ApiKeyManager, null), /*#__PURE__*/React.createElement("div", {
+  }, "Set\u0103ri")),
+  /*#__PURE__*/React.createElement("div", {
+    style: {background:C.surface,border:"1px solid "+C.gold,borderTop:"2px solid "+C.gold,padding:"24px",marginBottom:24}
+  },
+    /*#__PURE__*/React.createElement("div", {style:{fontSize:13,fontWeight:700,color:C.gold,marginBottom:8}}, "\u{1F4E6} Versiune pentru elevi"),
+    /*#__PURE__*/React.createElement("div", {style:{fontSize:11,color:C.dim,marginBottom:12,lineHeight:1.7}},
+      "Genereaz\u0103 un fi\u015fier HTML cu Firebase URL inclus. Elevii care deschid acel fi\u015fier nu vor vedea ecranul de configurare."
+    ),
+    /*#__PURE__*/React.createElement("div", {style:{fontSize:11,color:C.dim,marginBottom:12}},
+      "Firebase URL activ: ",
+      /*#__PURE__*/React.createElement("span", {style:{color:C.gold,fontFamily:"monospace",fontSize:10}}, sGet("fb_database_url") || BAKED_FB_URL || "—")
+    ),
+    /*#__PURE__*/React.createElement("button", {
+      onClick: () => downloadBakedApp(sGet("fb_database_url") || BAKED_FB_URL || ""),
+      style: {padding:"12px 24px",background:C.gold,color:C.bg,fontFamily:font,fontSize:12,fontWeight:700,border:"none",cursor:"pointer",letterSpacing:1}
+    }, "\u2B07 DESCARC\u0102 VERSIUNE PENTRU ELEVI")
+  ),
+  /*#__PURE__*/React.createElement(PasswordManager, null), /*#__PURE__*/React.createElement(ApiKeyManager, null), /*#__PURE__*/React.createElement("div", {
     style: {
       background: C.surface,
       border: `1px solid ${C.border}`,
