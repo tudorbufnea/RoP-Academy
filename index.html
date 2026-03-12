@@ -34,9 +34,11 @@ const {
 } = React;
 
 // ─── Firebase Realtime Database (REST API — no SDK needed) ────────────────────
+// BAKED_FB_URL: completat automat de SetupWizard la "Descarcă app configurat"
+const BAKED_FB_URL = "";
 const FB = {
   get base() {
-    return sGet("fb_database_url") || "";
+    return sGet("fb_database_url") || BAKED_FB_URL || "";
   },
   async get(path) {
     const r = await fetch(`${FB.base}/${path}.json`);
@@ -91,7 +93,7 @@ function getMentorPass() {
   return sGet("mentor_pass") || "";
 }
 function isSetupDone() {
-  return !!sGet("fb_database_url");
+  return !!(sGet("fb_database_url") || BAKED_FB_URL);
 }
 const STORAGE_PREFIX = "rop_academy_";
 
@@ -623,12 +625,34 @@ function loadApiKey() {
 // ─── Auth ─────────────────────────────────────────────────────────────────────
 
 // ─── Setup Wizard (first-time mentor setup) ───────────────────────────────────
+function downloadBakedApp(fbUrl) {
+  // Read current HTML, replace BAKED_FB_URL = "" with actual URL
+  fetch(window.location.href)
+    .then(r => r.text())
+    .then(html => {
+      const updated = html.replace(
+        'const BAKED_FB_URL = "";',
+        `const BAKED_FB_URL = "${fbUrl}";`
+      );
+      const blob = new Blob([updated], {type: "text/html"});
+      const a = document.createElement("a");
+      a.href = URL.createObjectURL(blob);
+      a.download = "ROP-Academy-deploy.html";
+      a.click();
+    })
+    .catch(() => {
+      // Fallback: copy URL to clipboard
+      alert("Copiaza URL-ul Firebase: " + fbUrl);
+    });
+}
 function SetupWizard({
+
   onDone
 }) {
   // mode: "full" = first time ever, "restore" = PC nou cu Firebase URL cunoscut
   const [mode, setMode] = useState(null); // null = detectare automată
   const [step, setStep] = useState(1);
+  const [wizDone, setWizDone] = useState(false);
   const [dbUrl, setDbUrl] = useState("");
   const [pass, setPass] = useState("");
   const [pass2, setPass2] = useState("");
@@ -637,7 +661,10 @@ function SetupWizard({
 
   // La mount: încearcă să detecteze dacă există config în Firebase la /config
   useEffect(() => {
-    // Dacă avem URL local, nu trebuie setup
+    // Dacă avem URL baked in sau local, nu trebuie setup
+    if (BAKED_FB_URL && !sGet("fb_database_url")) {
+      sSet("fb_database_url", BAKED_FB_URL);
+    }
     if (sGet("fb_database_url")) {
       onDone();
       return;
@@ -707,7 +734,8 @@ function SetupWizard({
           return;
         }
         sSet("mentor_pass", pass);
-        onDone();
+        if (mode === "restore") { onDone(); return; }
+        setWizDone(true);
       } catch (e) {
         setErr("Eroare la verificare: " + e.message);
       }
@@ -727,13 +755,36 @@ function SetupWizard({
           })
         });
         sSet("mentor_pass", pass);
-        onDone();
+        setWizDone(true);
       } catch (e) {
         setErr("Eroare la salvare: " + e.message);
       }
       setTesting(false);
     }
   };
+  if (wizDone) {
+    const fbUrl = sGet("fb_database_url") || "";
+    return /*#__PURE__*/React.createElement("div", {
+      style: {minHeight:"100vh",background:C.bg,display:"flex",alignItems:"center",justifyContent:"center",fontFamily:font}
+    }, /*#__PURE__*/React.createElement("div", {
+      style: {background:C.surface,border:"2px solid "+C.gold,padding:48,maxWidth:520,width:"100%",textAlign:"center"}
+    },
+      /*#__PURE__*/React.createElement("div", {style:{fontSize:40,marginBottom:16}}, "\u2705"),
+      /*#__PURE__*/React.createElement("div", {style:{fontSize:20,fontWeight:700,color:C.gold,marginBottom:8}}, "Configurare complet\u0103!"),
+      /*#__PURE__*/React.createElement("div", {style:{fontSize:13,color:C.dim,marginBottom:32,lineHeight:1.7}},
+        "Firebase conectat. Acum descarc\u0103 app-ul configurat \u0219i pune-l pe GitHub Pages. ",
+        /*#__PURE__*/React.createElement("strong", {style:{color:C.text}}, "Elevii nu vor mai vedea acest ecran.")
+      ),
+      /*#__PURE__*/React.createElement("button", {
+        onClick: () => downloadBakedApp(fbUrl),
+        style: {width:"100%",padding:"16px",background:C.gold,color:C.bg,fontFamily:font,fontSize:14,fontWeight:700,border:"none",cursor:"pointer",marginBottom:16,letterSpacing:1}
+      }, "\u2B07 DESCARC\u0102 APP CONFIGURAT PENTRU ELEVI"),
+      /*#__PURE__*/React.createElement("button", {
+        onClick: onDone,
+        style: {width:"100%",padding:"12px",background:"transparent",color:C.dim,fontFamily:font,fontSize:12,border:"1px solid "+C.border,cursor:"pointer"}
+      }, "CONTINU\u0102 F\u0102R\u0102 DESCARCARE \u2192")
+    ));
+  }
   return /*#__PURE__*/React.createElement("div", {
     style: {
       minHeight: "100vh",
